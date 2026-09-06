@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/simulation",
+    "crates/economy",
+    "crates/agents",
+    "crates/organizations",
+    "crates/world",
+    "crates/events",
+    "crates/api",
+]

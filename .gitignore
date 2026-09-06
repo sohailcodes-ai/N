@@ -1,0 +1,13 @@
+# Rust default gitignore
+/target
+/Cargo.lock
+
+# Visual Studio
+*.rs.bak
+*.md.backup
+
+# Environment variables
+.env
+
+# Backup files
+*.bak
