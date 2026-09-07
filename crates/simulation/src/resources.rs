@@ -49,6 +49,26 @@ pub const REGENERATION_RATE_WATER: u32 = 3;
 pub const RESOURCE_RESERVE_FOOD: u32 = 200;
 pub const RESOURCE_RESERVE_WATER: u32 = 150;
 
+pub const DEFAULT_WAGE: f64 = 10.0;
+pub const MIN_WAGE: f64 = 1.0;
+pub const MAX_WAGE: f64 = 50.0;
+pub const COMPANY_INSOLVENCY_THRESHOLD: f64 = 50.0;
+pub const COMPANY_LOSS_STREAK_TO_FIRE: u32 = 48;
+pub const COMPANY_GROWTH_COOLDOWN: u64 = 1440;
+pub const HIRE_COOLDOWN: u64 = 60;
+pub const SKILL_MATCH_BONUS: f64 = 0.3;
+pub const WAGE_SCORE_FACTOR: f64 = 0.5;
+
+pub const REQUIRED_WORKERS_FOOD: usize = 3;
+pub const REQUIRED_WORKERS_WATER: usize = 3;
+pub const REQUIRED_WORKERS_SERVICE: usize = 2;
+pub const REQUIRED_WORKERS_RETAILER: usize = 2;
+
+pub const PROFIT_FOR_GROWTH: f64 = 50.0;
+pub const CASH_FOR_GROWTH: f64 = 500.0;
+pub const LOSS_FOR_CONTRACTION: f64 = -100.0;
+pub const FIRE_GRADUAL_COOLDOWN: u32 = 6;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentNeeds {
     pub hunger: f64,

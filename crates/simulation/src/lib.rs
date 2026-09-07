@@ -3,6 +3,7 @@ pub mod city;
 pub mod clock;
 pub mod company;
 pub mod economy;
+pub mod employment;
 pub mod events;
 pub mod market;
 pub mod production;
@@ -13,6 +14,7 @@ pub use city::*;
 pub use clock::*;
 pub use company::*;
 pub use economy::*;
+pub use employment::*;
 pub use events::*;
 pub use market::*;
 pub use production::*;
@@ -37,6 +39,7 @@ pub struct SimulationState {
     pub markets: MarketState,
     pub tick: u64,
     pub production_recipes: HashMap<String, Recipe>,
+    pub labor_market: LaborMarketState,
 }
 
 #[derive(Clone, Debug)]
@@ -51,6 +54,7 @@ impl World {
         let mut agents = HashMap::new();
         let mut companies = HashMap::new();
         let mut events = Vec::new();
+        let mut labor_market = LaborMarketState::new();
 
         for i in 0..num_agents {
             let agent_id = format!("agent-{:04}", i);
@@ -99,10 +103,6 @@ impl World {
             let mut owners = HashMap::new();
             owners.insert(founder_id.clone(), 1.0);
 
-            let mut employees = HashMap::new();
-            let count = (i % 5) as u32 + 1;
-            employees.insert(format!("agent-{:04}", i), count);
-
             let mut products = Vec::new();
             products.push(ProductOffering {
                 name: format!("product-{:03}", i),
@@ -137,12 +137,19 @@ impl World {
                 _ => {}
             }
 
+            let (desired_workforce, required_workers, wage) = match company_type {
+                CompanyType::FoodProducer => (3, REQUIRED_WORKERS_FOOD, DEFAULT_WAGE),
+                CompanyType::WaterProducer => (3, REQUIRED_WORKERS_WATER, DEFAULT_WAGE),
+                CompanyType::Service => (2, REQUIRED_WORKERS_SERVICE, DEFAULT_WAGE * 0.8),
+                CompanyType::Retailer => (2, REQUIRED_WORKERS_RETAILER, DEFAULT_WAGE * 0.8),
+            };
+
             let company = CompanyState {
                 id: company_id.clone(),
                 name: format!("Company-{}", i),
                 founder: founder_id,
                 owners,
-                employees,
+                employees: HashMap::new(),
                 cash: 1000.0,
                 revenue: 0.0,
                 expenses: 0.0,
@@ -156,6 +163,20 @@ impl World {
                 inventory,
                 recipe_name,
                 production_cooldown: 0,
+                status: CompanyStatus::Operating,
+                desired_workforce,
+                min_workforce: 1,
+                max_workforce: 8,
+                required_workers,
+                wage,
+                job_openings: Vec::new(),
+                profit_loss: 0.0,
+                cumulative_profit: 0.0,
+                loss_streak: 0,
+                last_growth_tick: 0,
+                last_hire_tick: 0,
+                active: true,
+                closed_at_tick: None,
             };
 
             events.push(Event {
@@ -169,6 +190,66 @@ impl World {
             });
 
             companies.insert(company_id, company);
+        }
+
+        // Bootstrap imperfect employment: some companies get initial workers, some agents stay unemployed
+        // This creates initial labor market dynamics
+        let company_ids: Vec<String> = companies.keys().cloned().collect();
+        for (idx, cid) in company_ids.iter().enumerate() {
+            let initial_count = match idx {
+                0 => 2,
+                1 => 2,
+                2 => 1,
+                3 => 2,
+                4 => 1,
+                5 => 0,
+                6 => 0,
+                7 => 0,
+                8 => 0,
+                9 => 0,
+                _ => 1,
+            };
+
+            let company = companies.get(cid).unwrap();
+            let company_type = company.company_type.clone();
+            let role = match company_type {
+                CompanyType::FoodProducer => "Production Worker",
+                CompanyType::WaterProducer => "Water Technician",
+                CompanyType::Retailer => "Sales Associate",
+                CompanyType::Service => "Service Worker",
+            };
+            let wage = company.wage;
+
+            for j in 0..initial_count {
+                let agent_idx = (idx * 5 + j) as u32;
+                let agent_id = format!("agent-{:04}", agent_idx);
+                if agents.contains_key(&agent_id) && !labor_market.is_agent_employed(&agent_id) {
+                    let hired = labor_market.create_employment(
+                        agent_id.clone(),
+                        cid.clone(),
+                        role.to_string(),
+                        wage,
+                        0,
+                    );
+                    if hired {
+                        let agent = agents.get_mut(&agent_id).unwrap();
+                        agent.employer = Some(cid.clone());
+
+                        let company = companies.get_mut(cid).unwrap();
+                        company.employees.insert(agent_id.clone(), 1);
+
+                        events.push(Event {
+                            id: format!("evt-init-hire-{}-{}-{}", cid, agent_id, 0),
+                            tick: 0,
+                            event_type: EventType::AgentHired,
+                            actor: Some(cid.clone()),
+                            cause: Some("genesis_bootstrap".to_string()),
+                            entities: vec![agent_id, cid.clone()],
+                            state_snapshot: format!("Initial hire at genesis"),
+                        });
+                    }
+                }
+            }
         }
 
         let mut districts = HashMap::new();
@@ -221,6 +302,7 @@ impl World {
             },
             tick: 0,
             production_recipes: Recipe::default_recipes(),
+            labor_market,
         };
 
         World { state, clock }
@@ -236,6 +318,9 @@ impl World {
         let is_work_hours = self.clock.is_work_hours();
 
         self.process_needs(tick);
+        self.process_job_evaluation(tick);
+        self.process_hiring(tick);
+        self.process_firing(tick);
         self.process_purchasing(tick);
         self.process_water_purchasing(tick);
         self.process_routines(tick, is_night, is_work_hours);
@@ -243,6 +328,8 @@ impl World {
         self.process_production(tick);
         self.process_market(tick);
         self.process_wages(tick);
+        self.process_company_accounting(tick);
+        self.process_workforce_adjustment(tick);
         self.process_resource_regeneration(tick);
     }
 
@@ -261,7 +348,8 @@ impl World {
     }
 
     fn process_needs(&mut self, tick: u64) {
-        let agent_ids: Vec<String> = self.state.agents.keys().cloned().collect();
+        let mut agent_ids: Vec<String> = self.state.agents.keys().cloned().collect();
+        agent_ids.sort();
         for agent_id in &agent_ids {
             let agent = self.state.agents.get_mut(agent_id).unwrap();
 
@@ -320,7 +408,8 @@ impl World {
             .copied()
             .unwrap_or(FOOD_BASE_PRICE);
 
-        let agent_ids: Vec<String> = self.state.agents.keys().cloned().collect();
+        let mut agent_ids: Vec<String> = self.state.agents.keys().cloned().collect();
+        agent_ids.sort();
         for agent_id in &agent_ids {
             let (hunger, food_qty, money, agent_location) = {
                 let agent = self.state.agents.get(agent_id).unwrap();
@@ -415,7 +504,8 @@ impl World {
     }
 
     fn process_routines(&mut self, tick: u64, is_night: bool, is_work_hours: bool) {
-        let agent_ids: Vec<String> = self.state.agents.keys().cloned().collect();
+        let mut agent_ids: Vec<String> = self.state.agents.keys().cloned().collect();
+        agent_ids.sort();
         for agent_id in &agent_ids {
             let agent = self.state.agents.get(agent_id).unwrap();
             let current_status = agent.status.clone();
@@ -549,20 +639,25 @@ impl World {
     }
 
     fn process_labor(&mut self, tick: u64) {
-        let agent_ids: Vec<String> = self.state.agents.keys().cloned().collect();
-        let company_ids: Vec<String> = self.state.companies.keys().cloned().collect();
+        let mut company_ids: Vec<String> = self.state.companies.keys().cloned().collect();
+        company_ids.sort();
 
         for company_id in &company_ids {
-            let working_agents: Vec<String> = agent_ids
+            let employments: Vec<_> = self
+                .state
+                .labor_market
+                .employments_for_company(company_id)
+                .into_iter()
+                .map(|e| e.agent_id.clone())
+                .collect();
+
+            let working_agents: Vec<String> = employments
                 .iter()
                 .filter(|aid| {
                     self.state
                         .agents
                         .get(*aid)
-                        .map(|a| {
-                            a.employer.as_deref() == Some(company_id.as_str())
-                                && a.status == AgentStatus::Working
-                        })
+                        .map(|a| a.status == AgentStatus::Working)
                         .unwrap_or(false)
                 })
                 .cloned()
@@ -573,16 +668,7 @@ impl World {
             }
 
             let working_count = working_agents.len();
-            let company = self.state.companies.get(company_id).unwrap();
-            let recipe_name = company.recipe_name.clone();
-
-            if recipe_name.is_none() {
-                continue;
-            }
-
-            let _recipe_name = recipe_name.unwrap();
-
-            let (has_enough_workers, average_skill) = {
+            let average_skill = {
                 let mut total_skill = 0.0;
                 let mut skill_count = 0u32;
                 for aid in &working_agents {
@@ -593,12 +679,11 @@ impl World {
                         }
                     }
                 }
-                let avg = if skill_count > 0 {
+                if skill_count > 0 {
                     total_skill / skill_count as f64
                 } else {
                     0.5
-                };
-                (working_count, avg)
+                }
             };
 
             self.state.events.push(Event {
@@ -606,11 +691,11 @@ impl World {
                 tick,
                 event_type: EventType::AgentStartedWork,
                 actor: Some(company_id.clone()),
-                cause: Some(format!("{} workers contributing labor", has_enough_workers)),
+                cause: Some(format!("{} workers contributing labor", working_count)),
                 entities: working_agents,
                 state_snapshot: format!(
                     "Company {} received {} units of labor, avg skill {:.2}",
-                    company_id, has_enough_workers, average_skill
+                    company_id, working_count, average_skill
                 ),
             });
         }
@@ -640,27 +725,45 @@ impl World {
             };
 
             let company = self.state.companies.get(company_id).unwrap();
+            if !company.active {
+                continue;
+            }
             let cooldown = company.production_cooldown;
             let inventory = company.inventory.clone();
+            let required_workers = company.required_workers;
 
             let working_count = self
                 .state
-                .agents
-                .values()
-                .filter(|a| {
-                    a.employer.as_deref() == Some(company_id.as_str())
-                        && a.status == AgentStatus::Working
+                .labor_market
+                .employments_for_company(company_id)
+                .iter()
+                .filter(|e| {
+                    self.state
+                        .agents
+                        .get(&e.agent_id)
+                        .map(|a| a.status == AgentStatus::Working)
+                        .unwrap_or(false)
                 })
                 .count();
+
+            let labor_ratio = if required_workers > 0 {
+                (working_count as f64 / required_workers as f64).min(1.0)
+            } else {
+                1.0
+            };
 
             let average_skill = {
                 let working_agents: Vec<_> = self
                     .state
-                    .agents
-                    .values()
-                    .filter(|a| {
-                        a.employer.as_deref() == Some(company_id.as_str())
-                            && a.status == AgentStatus::Working
+                    .labor_market
+                    .employments_for_company(company_id)
+                    .iter()
+                    .filter(|e| {
+                        self.state
+                            .agents
+                            .get(&e.agent_id)
+                            .map(|a| a.status == AgentStatus::Working)
+                            .unwrap_or(false)
                     })
                     .collect();
                 if working_agents.is_empty() {
@@ -668,7 +771,13 @@ impl World {
                 } else {
                     let total: f64 = working_agents
                         .iter()
-                        .map(|a| a.skills.get("productivity").copied().unwrap_or(0.5))
+                        .map(|e| {
+                            self.state
+                                .agents
+                                .get(&e.agent_id)
+                                .map(|a| a.skills.get("productivity").copied().unwrap_or(0.5))
+                                .unwrap_or(0.5)
+                        })
                         .sum();
                     total / working_agents.len() as f64
                 }
@@ -683,8 +792,8 @@ impl World {
                     cause: Some(format!("recipe: {}", recipe_name)),
                     entities: vec![company_id.clone()],
                     state_snapshot: format!(
-                        "Starting production of {} with {} workers, avg skill {:.2}",
-                        recipe_name, working_count, average_skill
+                        "Starting production of {} with {} workers ({:.0}% labor capacity), avg skill {:.2}",
+                        recipe_name, working_count, labor_ratio * 100.0, average_skill
                     ),
                 });
 
@@ -708,8 +817,11 @@ impl World {
                                 )),
                                 entities: vec![company_id.clone()],
                                 state_snapshot: format!(
-                                    "Produced {} {} from {}",
-                                    output.quantity, output.resource, recipe_name
+                                    "Produced {} {} from {} (labor: {:.0}%)",
+                                    output.quantity,
+                                    output.resource,
+                                    recipe_name,
+                                    labor_ratio * 100.0
                                 ),
                             });
                         }
@@ -733,6 +845,7 @@ impl World {
             .state
             .companies
             .values()
+            .filter(|c| c.active)
             .filter_map(|c| {
                 c.inventory
                     .get("food")
@@ -746,6 +859,7 @@ impl World {
             .state
             .companies
             .values()
+            .filter(|c| c.active)
             .filter_map(|c| {
                 c.inventory
                     .get("water")
@@ -1023,38 +1137,40 @@ impl World {
         let company_ids: Vec<String> = self.state.companies.keys().cloned().collect();
 
         for company_id in &company_ids {
-            let working_employees: Vec<String> = self
+            let company = match self.state.companies.get(&company_id) {
+                Some(c) if c.active => c,
+                _ => continue,
+            };
+            let company_cash = company.cash;
+
+            let employments: Vec<(String, f64)> = self
                 .state
-                .agents
-                .values()
-                .filter(|a| {
-                    a.employer.as_deref() == Some(company_id.as_str())
-                        && a.status == AgentStatus::Working
-                })
-                .map(|a| a.id.clone())
+                .labor_market
+                .employments_for_company(&company_id)
+                .iter()
+                .map(|e| (e.agent_id.clone(), e.wage))
                 .collect();
 
-            if working_employees.is_empty() {
+            if employments.is_empty() {
                 continue;
             }
-
-            let company = self.state.companies.get(company_id).unwrap();
-            let company_cash = company.cash;
 
             let mut total_wages = 0.0;
             let mut paid_employees = Vec::new();
 
-            for emp_id in &working_employees {
-                if company_cash - total_wages >= WAGE_PER_TICK {
-                    total_wages += WAGE_PER_TICK;
+            for (emp_id, wage) in &employments {
+                if company_cash - total_wages >= *wage {
+                    total_wages += wage;
                     paid_employees.push(emp_id.clone());
                 }
             }
 
             if total_wages > 0.0 {
-                let company = self.state.companies.get_mut(company_id).unwrap();
+                let company = self.state.companies.get_mut(&company_id).unwrap();
                 company.cash -= total_wages;
                 company.expenses += total_wages;
+
+                self.state.labor_market.total_wages_paid += total_wages;
 
                 for emp_id in &paid_employees {
                     let agent = self.state.agents.get_mut(emp_id).unwrap();
@@ -1069,7 +1185,7 @@ impl World {
                     cause: Some("regular_wage".to_string()),
                     entities: paid_employees.clone(),
                     state_snapshot: format!(
-                        "Paid {} N to {} employees",
+                        "Paid {:.0} N to {} employees",
                         total_wages,
                         paid_employees.len()
                     ),
@@ -1269,12 +1385,443 @@ impl World {
         }
     }
 
+    fn process_job_evaluation(&mut self, tick: u64) {
+        let mut agent_ids: Vec<String> = self.state.agents.keys().cloned().collect();
+        agent_ids.sort();
+        let mut companies_snapshot: Vec<(String, String, f64)> = self
+            .state
+            .companies
+            .iter()
+            .filter(|(_, c)| c.active)
+            .map(|(id, c)| (id.clone(), c.location.clone(), c.wage))
+            .collect();
+        companies_snapshot.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for agent_id in &agent_ids {
+            let (is_employed, agent_location, agent_skills) = {
+                let agent = self.state.agents.get(agent_id).unwrap();
+                (
+                    self.state.labor_market.is_agent_employed(agent_id),
+                    agent.location.clone(),
+                    agent.skills.clone(),
+                )
+            };
+
+            if is_employed {
+                continue;
+            }
+
+            let openings: Vec<JobOffer> = self.state.labor_market.job_openings.clone();
+
+            let mut best_score = -1.0_f64;
+            let mut best_opening_idx: Option<usize> = None;
+
+            for (i, opening) in openings.iter().enumerate() {
+                let live_count = self.state.labor_market.job_openings[i].openings;
+                if live_count == 0 {
+                    continue;
+                }
+                let company_info = companies_snapshot
+                    .iter()
+                    .find(|(id, _, _)| id == &opening.company_id);
+                let (_, ref company_loc, _) = match company_info {
+                    Some(info) => info,
+                    None => continue,
+                };
+
+                let skill_level = agent_skills
+                    .get(&opening.required_skill)
+                    .copied()
+                    .unwrap_or(0.0);
+                if skill_level < opening.min_skill_level {
+                    continue;
+                }
+
+                let location_match = *company_loc == agent_location;
+                let skill_match = (skill_level - opening.min_skill_level).max(0.0);
+                let score =
+                    LaborMarketState::compute_job_score(opening.wage, skill_match, location_match);
+
+                if score > best_score {
+                    best_score = score;
+                    best_opening_idx = Some(i);
+                }
+            }
+
+            if let Some(idx) = best_opening_idx {
+                if self.state.labor_market.job_openings[idx].openings == 0 {
+                    continue;
+                }
+                self.state.labor_market.job_openings[idx].openings -= 1;
+
+                let company_id = openings[idx].company_id.clone();
+                let role = openings[idx].role.clone();
+                let wage = openings[idx].wage;
+                let required_skill = openings[idx].required_skill.clone();
+                let min_skill = openings[idx].min_skill_level;
+
+                let hired = self.state.labor_market.create_employment(
+                    agent_id.clone(),
+                    company_id.clone(),
+                    role.clone(),
+                    wage,
+                    tick,
+                );
+
+                if hired {
+                    let agent = self.state.agents.get_mut(agent_id).unwrap();
+                    agent.employer = Some(company_id.clone());
+
+                    if let Some(company) = self.state.companies.get_mut(&company_id) {
+                        company.employees.insert(agent_id.clone(), 1);
+                        company.last_hire_tick = tick;
+                    }
+
+                    self.state.events.push(Event {
+                        id: format!("evt-hire-{}-{}-{}", company_id, agent_id, tick),
+                        tick,
+                        event_type: EventType::AgentHired,
+                        actor: Some(company_id.clone()),
+                        cause: Some(format!("job_score={:.3}", best_score)),
+                        entities: vec![agent_id.clone(), company_id],
+                        state_snapshot: format!(
+                            "Hired {} as {} at {:.1} N/tick (skill: {} {:.2})",
+                            agent_id, role, wage, required_skill, min_skill
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    fn process_hiring(&mut self, tick: u64) {
+        let mut company_ids: Vec<String> = self.state.companies.keys().cloned().collect();
+        company_ids.sort();
+
+        for company_id in &company_ids {
+            let (active, is_insolvent, desired, current_count, wage, _location, last_hire) = {
+                let company = self.state.companies.get(company_id).unwrap();
+                (
+                    company.active,
+                    company.status == CompanyStatus::Insolvent,
+                    company.desired_workforce,
+                    self.state
+                        .labor_market
+                        .employee_count_for_company(company_id),
+                    company.wage,
+                    company.location.clone(),
+                    company.last_hire_tick,
+                )
+            };
+
+            if !active || is_insolvent {
+                continue;
+            }
+
+            if tick >= last_hire && tick - last_hire < HIRE_COOLDOWN {
+                continue;
+            }
+
+            if current_count >= desired {
+                continue;
+            }
+
+            let needed = desired - current_count;
+            let openings: Vec<JobOffer> = self
+                .state
+                .labor_market
+                .job_openings
+                .iter()
+                .filter(|o| o.company_id == *company_id)
+                .cloned()
+                .collect();
+            let total_openings: u32 = openings.iter().map(|o| o.openings).sum();
+            if total_openings >= needed as u32 {
+                continue;
+            }
+
+            let company = self.state.companies.get(company_id).unwrap();
+            let role = match company.company_type {
+                CompanyType::FoodProducer => "Production Worker",
+                CompanyType::WaterProducer => "Water Technician",
+                CompanyType::Retailer => "Sales Associate",
+                CompanyType::Service => "Service Worker",
+            };
+
+            let required_skill = match company.company_type {
+                CompanyType::FoodProducer | CompanyType::WaterProducer => "productivity",
+                _ => "social",
+            };
+
+            let job_offer = JobOffer {
+                company_id: company_id.clone(),
+                role: role.to_string(),
+                wage,
+                required_skill: required_skill.to_string(),
+                min_skill_level: 0.2,
+                openings: (needed as u32).max(1),
+            };
+
+            self.state.labor_market.job_openings.push(job_offer.clone());
+
+            self.state.events.push(Event {
+                id: format!("evt-jobpost-{}-{}", company_id, tick),
+                tick,
+                event_type: EventType::JobPosted,
+                actor: Some(company_id.clone()),
+                cause: Some(format!("workforce {}/{}", current_count, desired)),
+                entities: vec![company_id.clone()],
+                state_snapshot: format!(
+                    "Posted {} openings for {} at {:.1} N/tick",
+                    job_offer.openings, role, wage
+                ),
+            });
+        }
+    }
+
+    fn process_firing(&mut self, tick: u64) {
+        let mut company_ids: Vec<String> = self.state.companies.keys().cloned().collect();
+        company_ids.sort();
+
+        for company_id in &company_ids {
+            let (active, cash, loss_streak, current_count, min_workforce, _revenue) = {
+                let company = self.state.companies.get(company_id).unwrap();
+                (
+                    company.active,
+                    company.cash,
+                    company.loss_streak,
+                    self.state
+                        .labor_market
+                        .employee_count_for_company(company_id),
+                    company.min_workforce,
+                    company.revenue,
+                )
+            };
+
+            if !active {
+                continue;
+            }
+
+            let total_wages = self
+                .state
+                .labor_market
+                .total_wage_cost_for_company(company_id);
+
+            let should_fire = (loss_streak >= COMPANY_LOSS_STREAK_TO_FIRE
+                && cash < COMPANY_INSOLVENCY_THRESHOLD
+                && current_count > min_workforce)
+                || (cash < total_wages && current_count > min_workforce);
+
+            if should_fire {
+                // Fire most recently hired (LIFO) - one at a time for gradual reduction
+                let employees: Vec<String> = self
+                    .state
+                    .labor_market
+                    .employments_for_company(company_id)
+                    .iter()
+                    .map(|e| e.agent_id.clone())
+                    .collect();
+
+                if let Some(emp_id) = employees.last() {
+                    let fired = self
+                        .state
+                        .labor_market
+                        .terminate_employment(emp_id, company_id);
+
+                    if fired {
+                        let agent = self.state.agents.get_mut(emp_id).unwrap();
+                        agent.employer = None;
+
+                        if let Some(company) = self.state.companies.get_mut(company_id) {
+                            company.employees.remove(emp_id);
+                        }
+
+                        self.state.events.push(Event {
+                            id: format!("evt-fire-{}-{}-{}", company_id, emp_id, tick),
+                            tick,
+                            event_type: EventType::AgentFired,
+                            actor: Some(company_id.clone()),
+                            cause: Some(format!("loss_streak={}, cash={:.0}", loss_streak, cash)),
+                            entities: vec![emp_id.clone(), company_id.clone()],
+                            state_snapshot: format!(
+                                "Fired {} from {} (workforce now {})",
+                                emp_id,
+                                company_id,
+                                current_count - 1
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    fn process_company_accounting(&mut self, tick: u64) {
+        let mut company_ids: Vec<String> = self.state.companies.keys().cloned().collect();
+        company_ids.sort();
+
+        for company_id in &company_ids {
+            let (active, cash, revenue, expenses, cumulative) = {
+                let company = self.state.companies.get(company_id).unwrap();
+                (
+                    company.active,
+                    company.cash,
+                    company.revenue,
+                    company.expenses,
+                    company.cumulative_profit,
+                )
+            };
+
+            if !active {
+                continue;
+            }
+
+            let profit = revenue - expenses;
+            let new_cumulative = cumulative + profit;
+
+            let company = self.state.companies.get_mut(company_id).unwrap();
+            company.profit_loss = profit;
+            company.cumulative_profit = new_cumulative;
+
+            if profit < 0.0 {
+                company.loss_streak += 1;
+
+                if company.cash < COMPANY_INSOLVENCY_THRESHOLD
+                    && company.loss_streak >= COMPANY_LOSS_STREAK_TO_FIRE
+                {
+                    let fired = self
+                        .state
+                        .labor_market
+                        .terminate_all_for_company(company_id);
+
+                    for emp_id in &fired {
+                        if let Some(agent) = self.state.agents.get_mut(emp_id) {
+                            agent.employer = None;
+                        }
+                    }
+
+                    self.state
+                        .markets
+                        .listings
+                        .retain(|l| l.seller_id != *company_id);
+
+                    company.active = false;
+                    company.status = CompanyStatus::Insolvent;
+                    company.closed_at_tick = Some(tick);
+
+                    self.state.events.push(Event {
+                        id: format!("evt-insolvent-{}-{}", company_id, tick),
+                        tick,
+                        event_type: EventType::CompanyClosedByInsolvency,
+                        actor: Some(company_id.clone()),
+                        cause: Some(format!(
+                            "cash={:.0}, loss_streak={}",
+                            cash, company.loss_streak
+                        )),
+                        entities: fired,
+                        state_snapshot: format!(
+                            "Company {} became insolvent and closed",
+                            company_id
+                        ),
+                    });
+                }
+            } else {
+                company.loss_streak = 0;
+            }
+
+            let employee_count = self
+                .state
+                .labor_market
+                .employee_count_for_company(company_id);
+
+            let company = self.state.companies.get_mut(company_id).unwrap();
+            if employee_count < company.min_workforce {
+                company.status = CompanyStatus::Understaffed;
+            } else if employee_count > company.max_workforce {
+                company.status = CompanyStatus::Overstaffed;
+            } else if company.active {
+                company.status = CompanyStatus::Operating;
+            }
+
+            company.revenue = 0.0;
+            company.expenses = 0.0;
+        }
+    }
+
+    fn process_workforce_adjustment(&mut self, tick: u64) {
+        let mut company_ids: Vec<String> = self.state.companies.keys().cloned().collect();
+        company_ids.sort();
+
+        for company_id in &company_ids {
+            let (active, profit, cash, desired, max_wf, last_growth) = {
+                let company = self.state.companies.get(company_id).unwrap();
+                (
+                    company.active,
+                    company.profit_loss,
+                    company.cash,
+                    company.desired_workforce,
+                    company.max_workforce,
+                    company.last_growth_tick,
+                )
+            };
+
+            if !active {
+                continue;
+            }
+
+            if profit > PROFIT_FOR_GROWTH
+                && cash > CASH_FOR_GROWTH
+                && desired < max_wf
+                && tick >= last_growth
+                && tick - last_growth >= COMPANY_GROWTH_COOLDOWN
+            {
+                let new_desired = (desired + 1).min(max_wf);
+                let company = self.state.companies.get_mut(company_id).unwrap();
+                company.desired_workforce = new_desired;
+                company.last_growth_tick = tick;
+
+                self.state.events.push(Event {
+                    id: format!("evt-expand-{}-{}", company_id, tick),
+                    tick,
+                    event_type: EventType::CompanyExpanded,
+                    actor: Some(company_id.clone()),
+                    cause: Some(format!("profit={:.0}, cash={:.0}", profit, cash)),
+                    entities: vec![company_id.clone()],
+                    state_snapshot: format!(
+                        "Company {} expanded workforce target to {}",
+                        company_id, new_desired
+                    ),
+                });
+            } else if profit < LOSS_FOR_CONTRACTION && desired > 1 {
+                let new_desired = (desired - 1).max(1);
+                let company = self.state.companies.get_mut(company_id).unwrap();
+                company.desired_workforce = new_desired;
+
+                self.state.events.push(Event {
+                    id: format!("evt-contract-{}-{}", company_id, tick),
+                    tick,
+                    event_type: EventType::CompanyContracted,
+                    actor: Some(company_id.clone()),
+                    cause: Some(format!("profit={:.0}", profit)),
+                    entities: vec![company_id.clone()],
+                    state_snapshot: format!(
+                        "Company {} contracted workforce target to {}",
+                        company_id, new_desired
+                    ),
+                });
+            }
+        }
+    }
+
     fn process_resource_regeneration(&mut self, tick: u64) {
         if tick % TICKS_PER_DAY != 0 {
             return;
         }
 
         for company in self.state.companies.values_mut() {
+            if !company.active {
+                continue;
+            }
             if company.company_type == CompanyType::FoodProducer {
                 let raw_food = company.inventory.get("raw_food").copied().unwrap_or(0);
                 if raw_food < 500 {
@@ -1314,6 +1861,8 @@ pub fn run_tick(world: &mut World) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── PHASE 2: NEEDS TESTS ──────────────────────────────────────────
 
     #[test]
     fn needs_start_satisfied() {
@@ -1394,6 +1943,8 @@ mod tests {
         }
     }
 
+    // ─── PHASE 2: INVENTORY TESTS ─────────────────────────────────────
+
     #[test]
     fn inventory_add_resource() {
         let mut inv = default_inventory();
@@ -1459,6 +2010,8 @@ mod tests {
         assert_eq!(amt, 0);
         assert_eq!(inv.resource_quantity("food"), 5);
     }
+
+    // ─── PHASE 2: ROUTINE TESTS ───────────────────────────────────────
 
     #[test]
     fn eating_reduces_hunger() {
@@ -1699,6 +2252,8 @@ mod tests {
         }
     }
 
+    // ─── PHASE 1: DETERMINISM TESTS ──────────────────────────────────
+
     #[test]
     fn deterministic_replay() {
         let mut w1 = World::initialize(1234, 5, 2);
@@ -1719,6 +2274,8 @@ mod tests {
         }
         assert_eq!(w1.state.events.len(), w2.state.events.len());
     }
+
+    // ─── PHASE 1: CLOCK TESTS ────────────────────────────────────────
 
     #[test]
     fn hour_of_day_progresses() {
@@ -1773,6 +2330,8 @@ mod tests {
         assert_eq!(w.clock.year(), 2);
     }
 
+    // ─── PHASE 1: EVENT TESTS ────────────────────────────────────────
+
     #[test]
     fn events_generated_during_tick() {
         let mut w = World::initialize(42, 1, 1);
@@ -1806,6 +2365,8 @@ mod tests {
         });
         assert!(has_status_event, "Should have an AgentDrank event");
     }
+
+    // ─── PHASE 3: INVARIANT TESTS ────────────────────────────────────
 
     #[test]
     fn agent_money_never_negative() {
@@ -1850,6 +2411,8 @@ mod tests {
             }
         }
     }
+
+    // ─── PHASE 3: SOAK TESTS ─────────────────────────────────────────
 
     #[test]
     fn soak_test_7_days() {
@@ -2061,14 +2624,26 @@ mod tests {
             w.tick();
         }
         for listing in &w.state.markets.listings {
+            let min = if listing.resource == "water" {
+                WATER_PRICE_MIN
+            } else {
+                FOOD_PRICE_MIN
+            };
+            let max = if listing.resource == "water" {
+                WATER_PRICE_MAX
+            } else {
+                FOOD_PRICE_MAX
+            };
             assert!(
-                listing.price >= FOOD_PRICE_MIN,
-                "Listing price should be >= min: {}",
+                listing.price >= min,
+                "Listing price for {} should be >= min: {}",
+                listing.resource,
                 listing.price
             );
             assert!(
-                listing.price <= FOOD_PRICE_MAX,
-                "Listing price should be <= max: {}",
+                listing.price <= max,
+                "Listing price for {} should be <= max: {}",
+                listing.resource,
                 listing.price
             );
         }
@@ -2279,23 +2854,6 @@ mod tests {
             agent.inventory.add_resource("food", 5);
             agent.inventory.add_resource("water", 5);
         }
-        let company_ids: Vec<String> = w.state.companies.keys().cloned().collect();
-        for cid in &company_ids {
-            let employees: Vec<String> = w
-                .state
-                .companies
-                .get(cid)
-                .unwrap()
-                .employees
-                .keys()
-                .cloned()
-                .collect();
-            for emp_id in &employees {
-                if let Some(agent) = w.state.agents.get_mut(emp_id) {
-                    agent.employer = Some(cid.clone());
-                }
-            }
-        }
         w.clock.tick = 9 * TICKS_PER_HOUR;
         w.advance(168);
         let food_produced: u32 = w
@@ -2452,5 +3010,513 @@ mod tests {
             assert_eq!(a1.inventory.resources, a2.inventory.resources);
         }
         assert_eq!(w1.state.events.len(), w2.state.events.len());
+    }
+
+    // ─── PHASE 5: EMPLOYMENT TESTS ──────────────────────────────────────
+
+    #[test]
+    fn genesis_creates_employment_records() {
+        let w = World::initialize(1234, 50, 10);
+        let total_employments = w.state.labor_market.active_employments().len();
+        assert!(
+            total_employments > 0,
+            "Genesis should create employment records"
+        );
+    }
+
+    #[test]
+    fn genesis_has_unemployed_agents() {
+        let w = World::initialize(1234, 50, 10);
+        let employed = w.state.labor_market.active_employments().len();
+        let total = w.state.agents.len();
+        assert!(
+            employed < total,
+            "Genesis should leave some agents unemployed: employed={}, total={}",
+            employed,
+            total
+        );
+    }
+
+    #[test]
+    fn agent_cannot_be_employed_twice() {
+        let mut w = World::initialize(42, 10, 3);
+        w.clock.tick = 10 * TICKS_PER_HOUR;
+        let agent_id = "agent-0000".to_string();
+        let company_id = "company-000".to_string();
+        let company2_id = "company-001".to_string();
+
+        let hired1 = w.state.labor_market.create_employment(
+            agent_id.clone(),
+            company_id,
+            "Worker".to_string(),
+            10.0,
+            0,
+        );
+        assert!(hired1);
+
+        let hired2 = w.state.labor_market.create_employment(
+            agent_id.clone(),
+            company2_id,
+            "Worker".to_string(),
+            12.0,
+            0,
+        );
+        assert!(!hired2, "Agent should not be hired at two companies");
+
+        assert_eq!(
+            w.state.labor_market.employments_for_agent(&agent_id).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn firing_releases_agent() {
+        let mut w = World::initialize(42, 10, 3);
+        let agent_id = "agent-0000".to_string();
+        let company_id = "company-000".to_string();
+
+        let hired = w.state.labor_market.create_employment(
+            agent_id.clone(),
+            company_id.clone(),
+            "Worker".to_string(),
+            10.0,
+            0,
+        );
+        assert!(hired);
+        assert!(w.state.labor_market.is_agent_employed(&agent_id));
+
+        let fired = w
+            .state
+            .labor_market
+            .terminate_employment(&agent_id, &company_id);
+        assert!(fired);
+        assert!(!w.state.labor_market.is_agent_employed(&agent_id));
+    }
+
+    #[test]
+    fn terminate_all_for_company() {
+        let mut w = World::initialize(42, 10, 3);
+        let company_id = "company-000".to_string();
+
+        for i in 0..3 {
+            let agent_id = format!("agent-{:04}", i);
+            w.state.labor_market.create_employment(
+                agent_id,
+                company_id.clone(),
+                "Worker".to_string(),
+                10.0,
+                0,
+            );
+        }
+
+        assert_eq!(
+            w.state.labor_market.employee_count_for_company(&company_id),
+            3
+        );
+
+        let fired = w.state.labor_market.terminate_all_for_company(&company_id);
+        assert_eq!(fired.len(), 3);
+        assert_eq!(
+            w.state.labor_market.employee_count_for_company(&company_id),
+            0
+        );
+    }
+
+    #[test]
+    fn job_openings_created_for_understaffed_companies() {
+        let mut w = World::initialize(42, 20, 5);
+        w.clock.tick = 10 * TICKS_PER_HOUR;
+        for _ in 0..5 {
+            w.tick();
+        }
+        let has_openings = !w.state.labor_market.job_openings.is_empty();
+        assert!(
+            has_openings,
+            "Understaffed companies should create job openings"
+        );
+    }
+
+    #[test]
+    fn unemployed_agent_can_find_job() {
+        let mut w = World::initialize(42, 20, 5);
+        w.clock.tick = 10 * TICKS_PER_HOUR;
+
+        let agent_id = "agent-0010".to_string();
+        assert!(
+            !w.state.labor_market.is_agent_employed(&agent_id),
+            "Agent should start unemployed"
+        );
+
+        for _ in 0..5 {
+            w.tick();
+        }
+
+        let is_employed = w.state.labor_market.is_agent_employed(&agent_id)
+            || w.state.agents.get(&agent_id).unwrap().employer.is_some();
+        assert!(
+            is_employed,
+            "Unemployed agent should find a job after a few ticks"
+        );
+    }
+
+    #[test]
+    fn wages_paid_only_to_employed_agents() {
+        let mut w = World::initialize(42, 10, 3);
+        let agent_id = "agent-0005".to_string();
+
+        assert!(
+            !w.state.labor_market.is_agent_employed(&agent_id),
+            "Agent should be unemployed"
+        );
+
+        let initial_money = w.state.agents.get(&agent_id).unwrap().money;
+        w.clock.tick = 10 * TICKS_PER_HOUR;
+        for _ in 0..10 {
+            w.tick();
+        }
+        let final_money = w.state.agents.get(&agent_id).unwrap().money;
+
+        assert!(
+            (final_money - initial_money).abs() < 0.01,
+            "Unemployed agent should not receive wages"
+        );
+    }
+
+    #[test]
+    fn company_profit_loss_tracking() {
+        let mut w = World::initialize(1234, 30, 5);
+        let agent_ids: Vec<String> = w.state.agents.keys().cloned().collect();
+        for id in &agent_ids {
+            let agent = w.state.agents.get_mut(id).unwrap();
+            agent.inventory.add_resource("food", 20);
+            agent.inventory.add_resource("water", 10);
+        }
+        w.clock.tick = 9 * TICKS_PER_HOUR;
+        for _ in 0..TICKS_PER_DAY * 7 {
+            w.tick();
+        }
+
+        let mut any_profit = false;
+        let mut any_loss = false;
+        for company in w.state.companies.values() {
+            if company.profit_loss > 0.0 {
+                any_profit = true;
+            }
+            if company.profit_loss < 0.0 {
+                any_loss = true;
+            }
+        }
+        assert!(
+            any_profit || any_loss,
+            "Some company should have profit or loss"
+        );
+    }
+
+    #[test]
+    fn company_workforce_grows_on_profit() {
+        let mut w = World::initialize(1234, 30, 5);
+        let agent_ids: Vec<String> = w.state.agents.keys().cloned().collect();
+        for id in &agent_ids {
+            let agent = w.state.agents.get_mut(id).unwrap();
+            agent.inventory.add_resource("food", 20);
+            agent.inventory.add_resource("water", 10);
+        }
+        w.clock.tick = 9 * TICKS_PER_HOUR;
+
+        let initial_desired: Vec<(String, usize)> = w
+            .state
+            .companies
+            .iter()
+            .filter(|(_, c)| c.active)
+            .map(|(id, c)| (id.clone(), c.desired_workforce))
+            .collect();
+
+        for _ in 0..TICKS_PER_DAY * 30 {
+            w.tick();
+        }
+
+        let mut any_growth = false;
+        for (id, initial) in &initial_desired {
+            if let Some(company) = w.state.companies.get(id) {
+                if company.desired_workforce > *initial {
+                    any_growth = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            any_growth,
+            "At least one company should grow workforce over 30 days"
+        );
+    }
+
+    #[test]
+    fn labor_affects_production() {
+        let mut w = World::initialize(42, 30, 5);
+        let agent_ids: Vec<String> = w.state.agents.keys().cloned().collect();
+        for id in &agent_ids {
+            let agent = w.state.agents.get_mut(id).unwrap();
+            agent.inventory.add_resource("food", 20);
+            agent.inventory.add_resource("water", 10);
+        }
+
+        // Count employments in food-producing companies
+        let food_companies: Vec<String> = w
+            .state
+            .companies
+            .iter()
+            .filter(|(_, c)| c.company_type == CompanyType::FoodProducer && c.active)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        let total_food_workers: usize = food_companies
+            .iter()
+            .map(|cid| w.state.labor_market.employee_count_for_company(cid))
+            .sum();
+
+        assert!(
+            total_food_workers > 0,
+            "Should have food company workers from genesis"
+        );
+    }
+
+    #[test]
+    fn company_insolvency_closes_company() {
+        let mut w = World::initialize(42, 5, 3);
+        let company_id = "company-000".to_string();
+
+        {
+            let company = w.state.companies.get_mut(&company_id).unwrap();
+            company.cash = 10.0;
+            company.loss_streak = COMPANY_LOSS_STREAK_TO_FIRE + 1;
+            company.active = true;
+        }
+
+        for i in 0..3 {
+            let agent_id = format!("agent-{:04}", i);
+            let _ = w.state.labor_market.create_employment(
+                agent_id.clone(),
+                company_id.clone(),
+                "Worker".to_string(),
+                10.0,
+                0,
+            );
+            let agent = w.state.agents.get_mut(&agent_id).unwrap();
+            agent.employer = Some(company_id.clone());
+        }
+
+        w.clock.tick = 10 * TICKS_PER_HOUR;
+        w.tick();
+
+        let company = w.state.companies.get(&company_id).unwrap();
+        assert!(
+            !company.active,
+            "Company should be inactive after insolvency"
+        );
+        assert_eq!(
+            w.state.labor_market.employee_count_for_company(&company_id),
+            0,
+            "All employees should be released"
+        );
+    }
+
+    #[test]
+    fn wages_cannot_create_money() {
+        let mut w = World::initialize(42, 10, 3);
+        let agent_ids: Vec<String> = w.state.agents.keys().cloned().collect();
+        for id in &agent_ids {
+            let agent = w.state.agents.get_mut(id).unwrap();
+            agent.inventory.add_resource("food", 20);
+            agent.inventory.add_resource("water", 10);
+        }
+
+        let initial_total = {
+            let agents_money: f64 = w.state.agents.values().map(|a| a.money).sum();
+            let companies_cash: f64 = w.state.companies.values().map(|c| c.cash).sum();
+            agents_money + companies_cash
+        };
+
+        w.clock.tick = 10 * TICKS_PER_HOUR;
+        for _ in 0..100 {
+            w.tick();
+        }
+
+        let final_total = {
+            let agents_money: f64 = w.state.agents.values().map(|a| a.money).sum();
+            let companies_cash: f64 = w.state.companies.values().map(|c| c.cash).sum();
+            agents_money + companies_cash
+        };
+
+        assert!(
+            (initial_total - final_total).abs() < 0.01,
+            "Money must be conserved: initial={}, final={}",
+            initial_total,
+            final_total
+        );
+    }
+
+    #[test]
+    fn labor_market_metrics() {
+        let w = World::initialize(1234, 50, 10);
+        let total = w.state.agents.len();
+        let employed = w.state.labor_market.active_employments().len();
+        let unemployed = w.state.labor_market.unemployed_count(total);
+        let open = w.state.labor_market.open_positions();
+        let avg_wage = w.state.labor_market.average_wage();
+
+        assert!(employed > 0, "Should have employed agents");
+        assert!(unemployed > 0, "Should have unemployed agents");
+        assert_eq!(employed + unemployed, total);
+        assert!(open >= 0);
+        assert!(avg_wage >= 0.0);
+    }
+
+    #[test]
+    fn hiring_event_emitted() {
+        let mut w = World::initialize(42, 20, 5);
+        w.clock.tick = 10 * TICKS_PER_HOUR;
+        let events_before = w.state.events.len();
+        for _ in 0..5 {
+            w.tick();
+        }
+        let hire_events: Vec<_> = w.state.events[events_before..]
+            .iter()
+            .filter(|e| e.event_type == EventType::AgentHired)
+            .collect();
+        assert!(
+            !hire_events.is_empty(),
+            "Should emit AgentHired events during hiring"
+        );
+    }
+
+    #[test]
+    fn job_posted_event_emitted() {
+        let mut w = World::initialize(42, 20, 5);
+        w.clock.tick = 10 * TICKS_PER_HOUR;
+        let events_before = w.state.events.len();
+        for _ in 0..5 {
+            w.tick();
+        }
+        let job_events: Vec<_> = w.state.events[events_before..]
+            .iter()
+            .filter(|e| e.event_type == EventType::JobPosted)
+            .collect();
+        assert!(
+            !job_events.is_empty(),
+            "Should emit JobPosted events for understaffed companies"
+        );
+    }
+
+    #[test]
+    fn company_cash_never_negative_after_long_run() {
+        let mut w = World::initialize(1234, 50, 10);
+        let agent_ids: Vec<String> = w.state.agents.keys().cloned().collect();
+        for id in &agent_ids {
+            let agent = w.state.agents.get_mut(id).unwrap();
+            agent.inventory.add_resource("food", 30);
+            agent.inventory.add_resource("water", 15);
+        }
+        for _ in 0..TICKS_PER_DAY * 7 {
+            w.tick();
+        }
+        for company in w.state.companies.values() {
+            assert!(
+                company.cash >= 0.0,
+                "Company {} has negative cash: {}",
+                company.id,
+                company.cash
+            );
+        }
+    }
+
+    #[test]
+    fn production_event_emitted() {
+        let mut w = World::initialize(1234, 30, 5);
+        let agent_ids: Vec<String> = w.state.agents.keys().cloned().collect();
+        for id in &agent_ids {
+            let agent = w.state.agents.get_mut(id).unwrap();
+            agent.inventory.add_resource("food", 20);
+            agent.inventory.add_resource("water", 10);
+        }
+        w.clock.tick = 9 * TICKS_PER_HOUR;
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
+        let prod_events: Vec<_> = w
+            .state
+            .events
+            .iter()
+            .filter(|e| e.event_type == EventType::ProductionCompleted)
+            .collect();
+        assert!(!prod_events.is_empty(), "Should have production events");
+    }
+
+    #[test]
+    fn wage_payment_event_emitted() {
+        let mut w = World::initialize(1234, 30, 5);
+        let agent_ids: Vec<String> = w.state.agents.keys().cloned().collect();
+        for id in &agent_ids {
+            let agent = w.state.agents.get_mut(id).unwrap();
+            agent.inventory.add_resource("food", 20);
+            agent.inventory.add_resource("water", 10);
+        }
+        w.clock.tick = 10 * TICKS_PER_HOUR;
+        for _ in 0..10 {
+            w.tick();
+        }
+        let wage_events: Vec<_> = w
+            .state
+            .events
+            .iter()
+            .filter(|e| e.event_type == EventType::WagePaid)
+            .collect();
+        assert!(!wage_events.is_empty(), "Should have wage payment events");
+    }
+
+    #[test]
+    fn labor_market_highest_paying_company() {
+        let mut w = World::initialize(42, 20, 5);
+        let best = w.state.labor_market.highest_paying_company();
+        assert!(best.is_some(), "Should have a highest paying company");
+        let (_, wage) = best.unwrap();
+        assert!(wage > 0.0, "Highest wage should be positive");
+    }
+
+    #[test]
+    fn labor_market_largest_employer() {
+        let mut w = World::initialize(42, 20, 5);
+        let best = w.state.labor_market.largest_employer();
+        assert!(best.is_some(), "Should have a largest employer");
+        let (_, count) = best.unwrap();
+        assert!(count > 0, "Largest employer should have employees");
+    }
+
+    #[test]
+    fn genesis_employment_consistent() {
+        let w = World::initialize(1234, 50, 10);
+
+        // Every employed agent should have employer set
+        for emp in w.state.labor_market.active_employments() {
+            let agent = w.state.agents.get(&emp.agent_id).unwrap();
+            assert_eq!(
+                agent.employer.as_deref(),
+                Some(emp.company_id.as_str()),
+                "Agent {} employer should match employment record",
+                emp.agent_id
+            );
+        }
+
+        // Companies with employees should have them in the employees HashMap
+        for company in w.state.companies.values() {
+            for emp_id in company.employees.keys() {
+                assert!(
+                    w.state
+                        .labor_market
+                        .is_agent_employed_at(emp_id, &company.id),
+                    "Company {} employees HashMap should match employment records",
+                    company.id
+                );
+            }
+        }
     }
 }

@@ -9,6 +9,7 @@ pub enum EventType {
     CompanyClosed,
     AgentHired,
     AgentFired,
+    AgentResigned,
     SalaryPaid,
     ProductProduced,
     ProductSold,
@@ -45,6 +46,10 @@ pub enum EventType {
     MonthStarted,
     YearStarted,
     WaterPurchased,
+    JobPosted,
+    CompanyExpanded,
+    CompanyContracted,
+    CompanyClosedByInsolvency,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

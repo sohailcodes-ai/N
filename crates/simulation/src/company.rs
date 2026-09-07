@@ -17,6 +17,25 @@ pub enum CompanyType {
     Service,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CompanyStatus {
+    Operating,
+    Understaffed,
+    Overstaffed,
+    Suspended,
+    Insolvent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobOffer {
+    pub company_id: String,
+    pub role: String,
+    pub wage: f64,
+    pub required_skill: String,
+    pub min_skill_level: f64,
+    pub openings: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProductOffering {
     pub name: String,
@@ -44,4 +63,18 @@ pub struct CompanyState {
     pub inventory: HashMap<String, u32>,
     pub recipe_name: Option<String>,
     pub production_cooldown: u32,
+    pub status: CompanyStatus,
+    pub desired_workforce: usize,
+    pub min_workforce: usize,
+    pub max_workforce: usize,
+    pub required_workers: usize,
+    pub wage: f64,
+    pub job_openings: Vec<JobOffer>,
+    pub profit_loss: f64,
+    pub cumulative_profit: f64,
+    pub loss_streak: u32,
+    pub last_growth_tick: u64,
+    pub last_hire_tick: u64,
+    pub active: bool,
+    pub closed_at_tick: Option<u64>,
 }
