@@ -110,22 +110,31 @@ impl World {
                 supply: 100.0,
             });
 
-            let company_type = if i < 5 {
+            let company_type = if i < 3 {
                 CompanyType::FoodProducer
+            } else if i < 5 {
+                CompanyType::WaterProducer
             } else {
                 CompanyType::Service
             };
 
-            let recipe_name = if company_type == CompanyType::FoodProducer {
-                Some("food_production".to_string())
-            } else {
-                None
+            let recipe_name = match company_type {
+                CompanyType::FoodProducer => Some("food_production".to_string()),
+                CompanyType::WaterProducer => Some("water_production".to_string()),
+                _ => None,
             };
 
             let mut inventory = HashMap::new();
-            if company_type == CompanyType::FoodProducer {
-                inventory.insert("raw_food".to_string(), 500);
-                inventory.insert("food".to_string(), 50);
+            match company_type {
+                CompanyType::FoodProducer => {
+                    inventory.insert("raw_food".to_string(), 500);
+                    inventory.insert("food".to_string(), 50);
+                }
+                CompanyType::WaterProducer => {
+                    inventory.insert("raw_water".to_string(), 400);
+                    inventory.insert("water".to_string(), 40);
+                }
+                _ => {}
             }
 
             let company = CompanyState {
@@ -207,6 +216,8 @@ impl World {
                 transactions: Vec::new(),
                 previous_demand: HashMap::new(),
                 previous_supply: HashMap::new(),
+                total_volume: HashMap::new(),
+                depth: MarketDepth::new(),
             },
             tick: 0,
             production_recipes: Recipe::default_recipes(),
@@ -220,16 +231,19 @@ impl World {
         let tick = self.clock.tick;
         self.state.tick = tick;
 
+        self.process_calendar_transitions(tick);
         let is_night = self.clock.is_night();
         let is_work_hours = self.clock.is_work_hours();
 
         self.process_needs(tick);
         self.process_purchasing(tick);
+        self.process_water_purchasing(tick);
         self.process_routines(tick, is_night, is_work_hours);
         self.process_labor(tick);
         self.process_production(tick);
         self.process_market(tick);
         self.process_wages(tick);
+        self.process_resource_regeneration(tick);
     }
 
     pub fn advance(&mut self, ticks: u64) {
@@ -715,7 +729,7 @@ impl World {
     }
 
     fn process_market(&mut self, tick: u64) {
-        let company_listing_data: Vec<(String, u32)> = self
+        let food_listing_data: Vec<(String, u32)> = self
             .state
             .companies
             .values()
@@ -728,7 +742,20 @@ impl World {
             })
             .collect();
 
-        let price = self
+        let water_listing_data: Vec<(String, u32)> = self
+            .state
+            .companies
+            .values()
+            .filter_map(|c| {
+                c.inventory
+                    .get("water")
+                    .copied()
+                    .filter(|q| *q > 0)
+                    .map(|q| (c.id.clone(), q))
+            })
+            .collect();
+
+        let food_price = self
             .state
             .markets
             .prices
@@ -736,7 +763,15 @@ impl World {
             .copied()
             .unwrap_or(FOOD_BASE_PRICE);
 
-        for (company_id, food_qty) in &company_listing_data {
+        let water_price = self
+            .state
+            .markets
+            .prices
+            .get("water")
+            .copied()
+            .unwrap_or(WATER_BASE_PRICE);
+
+        for (company_id, food_qty) in &food_listing_data {
             let existing = self
                 .state
                 .markets
@@ -748,14 +783,14 @@ impl World {
                 Some(idx) => {
                     self.state.markets.listings[idx].quantity += food_qty;
                     self.state.markets.listings[idx].original_quantity += food_qty;
-                    self.state.markets.listings[idx].price = price;
+                    self.state.markets.listings[idx].price = food_price;
                 }
                 None => {
                     self.state.markets.listings.push(MarketListing {
                         seller_id: company_id.clone(),
                         resource: "food".to_string(),
                         quantity: *food_qty,
-                        price,
+                        price: food_price,
                         original_quantity: *food_qty,
                     });
 
@@ -766,13 +801,56 @@ impl World {
                         actor: Some(company_id.clone()),
                         cause: Some("market_listing".to_string()),
                         entities: vec![company_id.clone()],
-                        state_snapshot: format!("Listed {} food at {:.2} N", food_qty, price),
+                        state_snapshot: format!("Listed {} food at {:.2} N", food_qty, food_price),
                     });
                 }
             }
 
             if let Some(company) = self.state.companies.get_mut(company_id) {
                 company.inventory.remove("food");
+            }
+        }
+
+        for (company_id, water_qty) in &water_listing_data {
+            let existing = self
+                .state
+                .markets
+                .listings
+                .iter()
+                .position(|l| l.seller_id == *company_id && l.resource == "water");
+
+            match existing {
+                Some(idx) => {
+                    self.state.markets.listings[idx].quantity += water_qty;
+                    self.state.markets.listings[idx].original_quantity += water_qty;
+                    self.state.markets.listings[idx].price = water_price;
+                }
+                None => {
+                    self.state.markets.listings.push(MarketListing {
+                        seller_id: company_id.clone(),
+                        resource: "water".to_string(),
+                        quantity: *water_qty,
+                        price: water_price,
+                        original_quantity: *water_qty,
+                    });
+
+                    self.state.events.push(Event {
+                        id: format!("evt-listing-water-{}-{}", company_id, tick),
+                        tick,
+                        event_type: EventType::MarketListingCreated,
+                        actor: Some(company_id.clone()),
+                        cause: Some("market_listing".to_string()),
+                        entities: vec![company_id.clone()],
+                        state_snapshot: format!(
+                            "Listed {} water at {:.2} N",
+                            water_qty, water_price
+                        ),
+                    });
+                }
+            }
+
+            if let Some(company) = self.state.companies.get_mut(company_id) {
+                company.inventory.remove("water");
             }
         }
 
@@ -796,18 +874,10 @@ impl World {
             *demand.entry(tx.resource.clone()).or_insert(0.0) += tx.quantity as f64;
         }
 
-        let food_price = self
-            .state
-            .markets
-            .prices
-            .get("food")
-            .copied()
-            .unwrap_or(FOOD_BASE_PRICE);
-
         let food_demand = demand.get("food").copied().unwrap_or(0.0);
         let food_supply = supply.get("food").copied().unwrap_or(0.0);
 
-        let prev_demand = self
+        let prev_food_demand = self
             .state
             .markets
             .previous_demand
@@ -815,35 +885,36 @@ impl World {
             .copied()
             .unwrap_or(0.0);
 
-        let demand_pressure = if prev_demand > 0.0 {
-            (food_demand / prev_demand - 1.0).max(-1.0).min(1.0)
+        let food_demand_pressure = if prev_food_demand > 0.0 {
+            (food_demand / prev_food_demand - 1.0).max(-1.0).min(1.0)
         } else if food_demand > 0.0 {
             0.5
         } else {
             0.0
         };
 
-        let sold_quantity: u32 = recent_transactions
+        let _food_sold: u32 = recent_transactions
             .iter()
             .filter(|t| t.resource == "food")
             .map(|t| t.quantity)
             .sum();
 
-        let new_price = adjust_price(
+        let new_food_price = adjust_price_with_scarcity(
             food_price,
-            sold_quantity,
             food_supply as u32,
-            demand_pressure,
+            food_demand_pressure,
+            SCARCITY_THRESHOLD_FOOD,
+            FOOD_PRICE_MIN,
+            FOOD_PRICE_MAX,
         );
 
-        if (new_price - food_price).abs() > 0.01 {
+        if (new_food_price - food_price).abs() > 0.01 {
             self.state
                 .markets
                 .prices
-                .insert("food".to_string(), new_price);
-
+                .insert("food".to_string(), new_food_price);
             self.state.events.push(Event {
-                id: format!("evt-price-{}", tick),
+                id: format!("evt-price-food-{}", tick),
                 tick,
                 event_type: EventType::PriceChanged,
                 actor: None,
@@ -851,7 +922,7 @@ impl World {
                 entities: vec![],
                 state_snapshot: format!(
                     "Food price: {:.2} -> {:.2} (demand: {:.1}, supply: {:.1})",
-                    food_price, new_price, food_demand, food_supply
+                    food_price, new_food_price, food_demand, food_supply
                 ),
             });
         }
@@ -864,6 +935,83 @@ impl World {
             .markets
             .previous_supply
             .insert("food".to_string(), food_supply);
+
+        let water_demand = demand.get("water").copied().unwrap_or(0.0);
+        let water_supply = supply.get("water").copied().unwrap_or(0.0);
+
+        let prev_water_demand = self
+            .state
+            .markets
+            .previous_demand
+            .get("water")
+            .copied()
+            .unwrap_or(0.0);
+
+        let water_demand_pressure = if prev_water_demand > 0.0 {
+            (water_demand / prev_water_demand - 1.0).max(-1.0).min(1.0)
+        } else if water_demand > 0.0 {
+            0.5
+        } else {
+            0.0
+        };
+
+        let _water_sold: u32 = recent_transactions
+            .iter()
+            .filter(|t| t.resource == "water")
+            .map(|t| t.quantity)
+            .sum();
+
+        let new_water_price = adjust_price_with_scarcity(
+            water_price,
+            water_supply as u32,
+            water_demand_pressure,
+            SCARCITY_THRESHOLD_WATER,
+            WATER_PRICE_MIN,
+            WATER_PRICE_MAX,
+        );
+
+        if (new_water_price - water_price).abs() > 0.01 {
+            self.state
+                .markets
+                .prices
+                .insert("water".to_string(), new_water_price);
+            self.state.events.push(Event {
+                id: format!("evt-price-water-{}", tick),
+                tick,
+                event_type: EventType::PriceChanged,
+                actor: None,
+                cause: Some("supply_demand".to_string()),
+                entities: vec![],
+                state_snapshot: format!(
+                    "Water price: {:.2} -> {:.2} (demand: {:.1}, supply: {:.1})",
+                    water_price, new_water_price, water_demand, water_supply
+                ),
+            });
+        }
+
+        self.state
+            .markets
+            .previous_demand
+            .insert("water".to_string(), water_demand);
+        self.state
+            .markets
+            .previous_supply
+            .insert("water".to_string(), water_supply);
+
+        self.state.markets.depth = MarketDepth {
+            food_bid_depth: food_listing_data.iter().map(|(_, q)| *q).sum(),
+            food_ask_depth: recent_transactions
+                .iter()
+                .filter(|t| t.resource == "food")
+                .map(|t| t.quantity)
+                .sum(),
+            water_bid_depth: water_listing_data.iter().map(|(_, q)| *q).sum(),
+            water_ask_depth: recent_transactions
+                .iter()
+                .filter(|t| t.resource == "water")
+                .map(|t| t.quantity)
+                .sum(),
+        };
 
         self.state
             .markets
@@ -926,6 +1074,221 @@ impl World {
                         paid_employees.len()
                     ),
                 });
+            }
+        }
+    }
+
+    fn process_calendar_transitions(&mut self, tick: u64) {
+        if tick == 0 {
+            return;
+        }
+        let prev_tick = tick - 1;
+
+        let prev_hour = (prev_tick / TICKS_PER_HOUR) % HOURS_PER_DAY;
+        let curr_hour = (tick / TICKS_PER_HOUR) % HOURS_PER_DAY;
+        if curr_hour != prev_hour {
+            self.state.events.push(Event {
+                id: format!("evt-hour-{}", tick),
+                tick,
+                event_type: EventType::HourStarted,
+                actor: None,
+                cause: None,
+                entities: vec![],
+                state_snapshot: format!("Hour {} started", curr_hour),
+            });
+        }
+
+        let prev_day = prev_tick / TICKS_PER_DAY;
+        let curr_day = tick / TICKS_PER_DAY;
+        if curr_day != prev_day {
+            self.state.events.push(Event {
+                id: format!("evt-day-{}", tick),
+                tick,
+                event_type: EventType::DayStarted,
+                actor: None,
+                cause: None,
+                entities: vec![],
+                state_snapshot: format!(
+                    "Day {} started (month day {})",
+                    curr_day + 1,
+                    self.clock.day_of_month()
+                ),
+            });
+
+            let prev_week = prev_day / DAYS_PER_WEEK;
+            let curr_week = curr_day / DAYS_PER_WEEK;
+            if curr_week != prev_week {
+                self.state.events.push(Event {
+                    id: format!("evt-week-{}", tick),
+                    tick,
+                    event_type: EventType::WeekStarted,
+                    actor: None,
+                    cause: None,
+                    entities: vec![],
+                    state_snapshot: format!("Week {} started", curr_week + 1),
+                });
+            }
+
+            let prev_month = prev_day / DAYS_PER_MONTH;
+            let curr_month = curr_day / DAYS_PER_MONTH;
+            if curr_month != prev_month {
+                self.state.events.push(Event {
+                    id: format!("evt-month-{}", tick),
+                    tick,
+                    event_type: EventType::MonthStarted,
+                    actor: None,
+                    cause: None,
+                    entities: vec![],
+                    state_snapshot: format!("Month {} started", curr_month + 1),
+                });
+            }
+
+            let prev_year = prev_day / (DAYS_PER_MONTH * MONTHS_PER_YEAR);
+            let curr_year = curr_day / (DAYS_PER_MONTH * MONTHS_PER_YEAR);
+            if curr_year != prev_year {
+                self.state.events.push(Event {
+                    id: format!("evt-year-{}", tick),
+                    tick,
+                    event_type: EventType::YearStarted,
+                    actor: None,
+                    cause: None,
+                    entities: vec![],
+                    state_snapshot: format!("Year {} started", curr_year + 1),
+                });
+            }
+        }
+    }
+
+    fn process_water_purchasing(&mut self, tick: u64) {
+        let water_price = self
+            .state
+            .markets
+            .prices
+            .get("water")
+            .copied()
+            .unwrap_or(WATER_BASE_PRICE);
+
+        let agent_ids: Vec<String> = self.state.agents.keys().cloned().collect();
+        for agent_id in &agent_ids {
+            let (thirst, water_qty, money, agent_location) = {
+                let agent = self.state.agents.get(agent_id).unwrap();
+                (
+                    agent.needs.thirst,
+                    agent.inventory.resource_quantity("water"),
+                    agent.money,
+                    agent.location.clone(),
+                )
+            };
+
+            if !agent_wants_water(thirst, water_qty) {
+                continue;
+            }
+
+            let desired_qty = compute_desired_water_quantity(thirst, water_qty);
+            if desired_qty == 0 {
+                continue;
+            }
+
+            let max_affordable = (money / water_price) as u32;
+            let buy_qty = desired_qty.min(max_affordable);
+            if buy_qty == 0 {
+                continue;
+            }
+
+            let mut best_listing_idx = None;
+            let mut best_price = f64::MAX;
+            for (i, listing) in self.state.markets.listings.iter().enumerate() {
+                if listing.resource == "water"
+                    && listing.quantity >= buy_qty
+                    && listing.price <= money / buy_qty as f64
+                    && listing.price < best_price
+                {
+                    let same_location = self
+                        .state
+                        .companies
+                        .get(&listing.seller_id)
+                        .map(|c| c.location == agent_location)
+                        .unwrap_or(false);
+                    if same_location || best_listing_idx.is_none() {
+                        best_listing_idx = Some(i);
+                        best_price = listing.price;
+                    }
+                }
+            }
+
+            if let Some(idx) = best_listing_idx {
+                let listing = &self.state.markets.listings[idx];
+                let seller_id = listing.seller_id.clone();
+                let resource = listing.resource.clone();
+                let price = listing.price;
+                let total_cost = price * buy_qty as f64;
+
+                let agent = self.state.agents.get_mut(agent_id).unwrap();
+                if agent.money >= total_cost {
+                    agent.money -= total_cost;
+                    let (ok, actual) = agent.inventory.add_resource(&resource, buy_qty);
+                    if ok && actual > 0 {
+                        self.state.markets.listings[idx].quantity -= actual;
+
+                        let company = self.state.companies.get_mut(&seller_id).unwrap();
+                        company.cash += total_cost;
+                        company.revenue += total_cost;
+
+                        *self
+                            .state
+                            .markets
+                            .total_volume
+                            .entry("water".to_string())
+                            .or_insert(0) += actual as u64;
+
+                        self.state.markets.transactions.push(MarketTransaction {
+                            buyer_id: agent_id.clone(),
+                            seller_id: seller_id.clone(),
+                            resource: resource.clone(),
+                            quantity: actual,
+                            price,
+                            total_cost,
+                            tick,
+                        });
+
+                        self.state.events.push(Event {
+                            id: format!("evt-water-purchase-{}-{}", agent_id, tick),
+                            tick,
+                            event_type: EventType::WaterPurchased,
+                            actor: Some(agent_id.clone()),
+                            cause: Some("thirst_driven".to_string()),
+                            entities: vec![agent_id.clone(), seller_id],
+                            state_snapshot: format!(
+                                "Bought {} {} at {:.2} N each, total {:.2} N",
+                                actual, resource, price, total_cost
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    fn process_resource_regeneration(&mut self, tick: u64) {
+        if tick % TICKS_PER_DAY != 0 {
+            return;
+        }
+
+        for company in self.state.companies.values_mut() {
+            if company.company_type == CompanyType::FoodProducer {
+                let raw_food = company.inventory.get("raw_food").copied().unwrap_or(0);
+                if raw_food < 500 {
+                    let regen = crate::resources::REGENERATION_RATE_FOOD;
+                    let new_val = (raw_food + regen).min(500);
+                    company.inventory.insert("raw_food".to_string(), new_val);
+                }
+            } else if company.company_type == CompanyType::WaterProducer {
+                let raw_water = company.inventory.get("raw_water").copied().unwrap_or(0);
+                if raw_water < 400 {
+                    let regen = crate::resources::REGENERATION_RATE_WATER;
+                    let new_val = (raw_water + regen).min(400);
+                    company.inventory.insert("raw_water".to_string(), new_val);
+                }
             }
         }
     }
@@ -1199,7 +1562,7 @@ mod tests {
     fn sleep_when_exhausted_at_night() {
         let mut w = World::initialize(42, 1, 0);
         let agent_id = w.state.agents.keys().next().unwrap().clone();
-        w.clock.tick = 23;
+        w.clock.tick = 23 * TICKS_PER_HOUR;
         {
             let agent = w.state.agents.get_mut(&agent_id).unwrap();
             agent.needs.fatigue = 0.9;
@@ -1214,7 +1577,7 @@ mod tests {
     #[test]
     fn work_during_work_hours_if_employed() {
         let mut w = World::initialize(42, 2, 2);
-        w.clock.tick = 10;
+        w.clock.tick = 10 * TICKS_PER_HOUR;
         let agent_id = "agent-0000".to_string();
         {
             let agent = w.state.agents.get_mut(&agent_id).unwrap();
@@ -1234,7 +1597,7 @@ mod tests {
     fn unemployed_agent_becomes_idle() {
         let mut w = World::initialize(42, 1, 0);
         let agent_id = w.state.agents.keys().next().unwrap().clone();
-        w.clock.tick = 10;
+        w.clock.tick = 10 * TICKS_PER_HOUR;
         {
             let agent = w.state.agents.get_mut(&agent_id).unwrap();
             agent.employer = None;
@@ -1250,7 +1613,7 @@ mod tests {
     #[test]
     fn work_improves_skill() {
         let mut w = World::initialize(42, 2, 2);
-        w.clock.tick = 10;
+        w.clock.tick = 10 * TICKS_PER_HOUR;
         let agent_id = "agent-0000".to_string();
         {
             let agent = w.state.agents.get_mut(&agent_id).unwrap();
@@ -1290,7 +1653,7 @@ mod tests {
     #[test]
     fn skill_never_exceeds_one() {
         let mut w = World::initialize(42, 2, 2);
-        w.clock.tick = 10;
+        w.clock.tick = 10 * TICKS_PER_HOUR;
         let agent_id = "agent-0000".to_string();
         {
             let agent = w.state.agents.get_mut(&agent_id).unwrap();
@@ -1361,7 +1724,7 @@ mod tests {
     fn hour_of_day_progresses() {
         let mut w = World::initialize(42, 1, 0);
         assert_eq!(w.clock.hour_of_day(), 0);
-        w.advance(12);
+        w.advance(TICKS_PER_HOUR * 12);
         assert_eq!(w.clock.hour_of_day(), 12);
     }
 
@@ -1369,28 +1732,45 @@ mod tests {
     fn day_progresses() {
         let mut w = World::initialize(42, 1, 0);
         assert_eq!(w.clock.day(), 1);
-        w.advance(24);
+        w.advance(TICKS_PER_DAY);
         assert_eq!(w.clock.day(), 2);
     }
 
     #[test]
     fn night_detected() {
         let mut w = World::initialize(42, 1, 0);
-        w.clock.tick = 23;
+        w.clock.tick = 23 * TICKS_PER_HOUR;
         assert!(w.clock.is_night());
-        w.clock.tick = 3;
+        w.clock.tick = 3 * TICKS_PER_HOUR;
         assert!(w.clock.is_night());
-        w.clock.tick = 12;
+        w.clock.tick = 12 * TICKS_PER_HOUR;
         assert!(!w.clock.is_night());
     }
 
     #[test]
     fn work_hours_detected() {
         let mut w = World::initialize(42, 1, 0);
-        w.clock.tick = 10;
+        w.clock.tick = 10 * TICKS_PER_HOUR;
         assert!(w.clock.is_work_hours());
-        w.clock.tick = 20;
+        w.clock.tick = 20 * TICKS_PER_HOUR;
         assert!(!w.clock.is_work_hours());
+    }
+
+    #[test]
+    fn calendar_year_month_week() {
+        let mut w = World::initialize(42, 1, 0);
+        assert_eq!(w.clock.year(), 1);
+        assert_eq!(w.clock.month(), 1);
+        assert_eq!(w.clock.day_of_week(), 0);
+        assert_eq!(w.clock.day_of_month(), 1);
+        assert_eq!(w.clock.minute_of_hour(), 0);
+
+        w.advance(TICKS_PER_DAY * 30);
+        assert_eq!(w.clock.month(), 2);
+        assert_eq!(w.clock.day_of_month(), 1);
+
+        w.advance(TICKS_PER_YEAR);
+        assert_eq!(w.clock.year(), 2);
     }
 
     #[test]
@@ -1474,7 +1854,7 @@ mod tests {
     #[test]
     fn soak_test_7_days() {
         let mut w = World::initialize(1234, 50, 10);
-        let ticks_7_days = HOURS_PER_DAY * 7;
+        let ticks_7_days = TICKS_PER_DAY * 7;
         let agent_ids: Vec<String> = w.state.agents.keys().cloned().collect();
         for id in &agent_ids {
             let agent = w.state.agents.get_mut(id).unwrap();
@@ -1644,7 +2024,7 @@ mod tests {
             agent.inventory.add_resource("food", 5);
             agent.inventory.add_resource("water", 5);
         }
-        w.clock.tick = 10;
+        w.clock.tick = 10 * TICKS_PER_HOUR;
         w.tick();
         let food_listings: Vec<_> = w
             .state
@@ -1676,7 +2056,7 @@ mod tests {
             agent.inventory.add_resource("food", 5);
             agent.inventory.add_resource("water", 5);
         }
-        w.clock.tick = 10;
+        w.clock.tick = 10 * TICKS_PER_HOUR;
         for _ in 0..50 {
             w.tick();
         }
@@ -1762,7 +2142,7 @@ mod tests {
             let companies_cash: f64 = w.state.companies.values().map(|c| c.cash).sum();
             agents_money + companies_cash
         };
-        w.clock.tick = 10;
+        w.clock.tick = 10 * TICKS_PER_HOUR;
         w.advance(100);
         let final_total = {
             let agents_money: f64 = w.state.agents.values().map(|a| a.money).sum();
@@ -1800,7 +2180,7 @@ mod tests {
             agent.inventory.add_resource("water", 5);
         }
         let initial_cash = w.state.companies.get(&company_id).unwrap().cash;
-        w.clock.tick = 10;
+        w.clock.tick = 10 * TICKS_PER_HOUR;
         w.tick();
         let final_cash = w.state.companies.get(&company_id).unwrap().cash;
         assert!(
@@ -1824,7 +2204,7 @@ mod tests {
             agent.inventory.add_resource("water", 5);
         }
         let initial_money = w.state.agents.get(&agent_id).unwrap().money;
-        w.clock.tick = 10;
+        w.clock.tick = 10 * TICKS_PER_HOUR;
         w.tick();
         let final_money = w.state.agents.get(&agent_id).unwrap().money;
         assert!(
@@ -1842,7 +2222,7 @@ mod tests {
             agent.inventory.add_resource("food", 20);
             agent.inventory.add_resource("water", 10);
         }
-        w.clock.tick = 10;
+        w.clock.tick = 10 * TICKS_PER_HOUR;
         w.advance(200);
         for agent in w.state.agents.values() {
             for (res, qty) in &agent.inventory.resources {
@@ -1870,7 +2250,7 @@ mod tests {
             agent.inventory.add_resource("food", 20);
             agent.inventory.add_resource("water", 10);
         }
-        w.clock.tick = 10;
+        w.clock.tick = 10 * TICKS_PER_HOUR;
         w.advance(200);
         for agent in w.state.agents.values() {
             assert!(
@@ -1916,7 +2296,7 @@ mod tests {
                 }
             }
         }
-        w.clock.tick = 9;
+        w.clock.tick = 9 * TICKS_PER_HOUR;
         w.advance(168);
         let food_produced: u32 = w
             .state
@@ -1966,9 +2346,93 @@ mod tests {
             agent.inventory.add_resource("food", 10);
             agent.inventory.add_resource("water", 5);
         }
-        w1.clock.tick = 9;
-        w2.clock.tick = 9;
+        w1.clock.tick = 9 * TICKS_PER_HOUR;
+        w2.clock.tick = 9 * TICKS_PER_HOUR;
         for _ in 0..168 {
+            w1.tick();
+            w2.tick();
+        }
+        assert_eq!(w1.tick_count(), w2.tick_count());
+        for id in w1.state.agents.keys() {
+            let a1 = w1.state.agents.get(id).unwrap();
+            let a2 = w2.state.agents.get(id).unwrap();
+            assert!(
+                (a1.money - a2.money).abs() < 0.0001,
+                "Agent {} money differs: {} vs {}",
+                id,
+                a1.money,
+                a2.money
+            );
+            assert!((a1.needs.hunger - a2.needs.hunger).abs() < 0.0001);
+            assert!((a1.needs.thirst - a2.needs.thirst).abs() < 0.0001);
+            assert_eq!(a1.inventory.resources, a2.inventory.resources);
+        }
+        assert_eq!(w1.state.events.len(), w2.state.events.len());
+    }
+
+    #[test]
+    fn soak_test_30_days() {
+        let mut w = World::initialize(5678, 50, 10);
+        let ticks_30_days = TICKS_PER_DAY * 30;
+        let agent_ids: Vec<String> = w.state.agents.keys().cloned().collect();
+        for id in &agent_ids {
+            let agent = w.state.agents.get_mut(id).unwrap();
+            agent.inventory.add_resource("food", 30);
+            agent.inventory.add_resource("water", 15);
+        }
+        for _ in 0..ticks_30_days {
+            w.tick();
+        }
+        assert_eq!(w.tick_count(), ticks_30_days);
+        assert_eq!(w.state.agents.len(), 50);
+        assert_eq!(w.state.companies.len(), 10);
+        let total_food: u32 = w
+            .state
+            .agents
+            .values()
+            .map(|a| a.inventory.resource_quantity("food"))
+            .sum();
+        assert!(total_food < 50 * 30, "Some food should have been consumed");
+        assert!(!w.state.events.is_empty());
+        for agent in w.state.agents.values() {
+            assert!(agent.money >= 0.0);
+            assert!(agent.needs.hunger >= 0.0 && agent.needs.hunger <= 1.0);
+            assert!(agent.needs.thirst >= 0.0 && agent.needs.thirst <= 1.0);
+            assert!(agent.needs.fatigue >= 0.0 && agent.needs.fatigue <= 1.0);
+        }
+        for company in w.state.companies.values() {
+            assert!(company.cash >= 0.0);
+        }
+        let has_water_purchased = w
+            .state
+            .events
+            .iter()
+            .any(|e| e.event_type == EventType::WaterPurchased);
+        assert!(
+            has_water_purchased,
+            "Water should be purchased in 30-day soak"
+        );
+    }
+
+    #[test]
+    fn deterministic_replay_phase4() {
+        let mut w1 = World::initialize(1234, 10, 5);
+        let mut w2 = World::initialize(1234, 10, 5);
+        let ids1: Vec<String> = w1.state.agents.keys().cloned().collect();
+        for id in &ids1 {
+            let agent = w1.state.agents.get_mut(id).unwrap();
+            agent.inventory.add_resource("food", 10);
+            agent.inventory.add_resource("water", 5);
+        }
+        let ids2: Vec<String> = w2.state.agents.keys().cloned().collect();
+        for id in &ids2 {
+            let agent = w2.state.agents.get_mut(id).unwrap();
+            agent.inventory.add_resource("food", 10);
+            agent.inventory.add_resource("water", 5);
+        }
+        w1.clock.tick = 9 * TICKS_PER_HOUR;
+        w2.clock.tick = 9 * TICKS_PER_HOUR;
+        for _ in 0..TICKS_PER_DAY * 7 {
             w1.tick();
             w2.tick();
         }

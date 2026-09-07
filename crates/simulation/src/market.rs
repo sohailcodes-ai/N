@@ -30,4 +30,25 @@ pub struct MarketState {
     pub transactions: Vec<MarketTransaction>,
     pub previous_demand: HashMap<String, f64>,
     pub previous_supply: HashMap<String, f64>,
+    pub total_volume: HashMap<String, u64>,
+    pub depth: MarketDepth,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketDepth {
+    pub food_bid_depth: u32,
+    pub food_ask_depth: u32,
+    pub water_bid_depth: u32,
+    pub water_ask_depth: u32,
+}
+
+impl MarketDepth {
+    pub fn new() -> Self {
+        Self {
+            food_bid_depth: 0,
+            food_ask_depth: 0,
+            water_bid_depth: 0,
+            water_ask_depth: 0,
+        }
+    }
 }

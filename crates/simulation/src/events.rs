@@ -39,6 +39,12 @@ pub enum EventType {
     WagePaid,
     CompanyRevenueReceived,
     PriceChanged,
+    HourStarted,
+    DayStarted,
+    WeekStarted,
+    MonthStarted,
+    YearStarted,
+    WaterPurchased,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

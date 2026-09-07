@@ -33,6 +33,22 @@ pub const WAGE_PER_TICK: f64 = 10.0;
 pub const FOOD_PURCHASE_HUNGER_THRESHOLD: f64 = 0.4;
 pub const FOOD_PURCHASE_TARGET_INVENTORY: u32 = 5;
 
+pub const WATER_BASE_PRICE: f64 = 0.5;
+pub const WATER_PRICE_MIN: f64 = 0.1;
+pub const WATER_PRICE_MAX: f64 = 5.0;
+pub const WATER_PURCHASE_THIRST_THRESHOLD: f64 = 0.4;
+pub const WATER_PURCHASE_TARGET_INVENTORY: u32 = 3;
+pub const RAW_WATER_INPUT_PER_CYCLE: u32 = 10;
+pub const WATER_OUTPUT_PER_CYCLE: u32 = 10;
+
+pub const SCARCITY_THRESHOLD_FOOD: u32 = 20;
+pub const SCARCITY_THRESHOLD_WATER: u32 = 15;
+pub const SCARCITY_PRICE_MULTIPLIER: f64 = 1.5;
+pub const REGENERATION_RATE_FOOD: u32 = 5;
+pub const REGENERATION_RATE_WATER: u32 = 3;
+pub const RESOURCE_RESERVE_FOOD: u32 = 200;
+pub const RESOURCE_RESERVE_WATER: u32 = 150;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentNeeds {
     pub hunger: f64,

@@ -1,13 +1,36 @@
-use n_simulation::{AgentStatus, EventType, World, HOURS_PER_DAY};
+use n_simulation::{AgentStatus, EventType, World, TICKS_PER_DAY, TICKS_PER_HOUR};
+
+fn format_clock(tick: u64) -> String {
+    let minute = tick % TICKS_PER_HOUR;
+    let hour = (tick / TICKS_PER_HOUR) % 24;
+    let day_of_week = (tick / TICKS_PER_DAY) % 7;
+    let day_of_month = (tick / TICKS_PER_DAY) % 30 + 1;
+    let month = (tick / (TICKS_PER_DAY * 30)) % 12 + 1;
+    let year = tick / (TICKS_PER_DAY * 30 * 12) + 1;
+    let weekday = match day_of_week {
+        0 => "Mon",
+        1 => "Tue",
+        2 => "Wed",
+        3 => "Thu",
+        4 => "Fri",
+        5 => "Sat",
+        6 => "Sun",
+        _ => "???",
+    };
+    format!(
+        "Y{:04}-M{:02}-D{:02}({}) {:02}:{:02}",
+        year, month, day_of_month, weekday, hour, minute
+    )
+}
 
 fn main() {
     let seed = 1234;
     let num_agents = 50;
     let num_companies = 10;
     let days = 7;
-    let total_ticks = HOURS_PER_DAY * days;
+    let total_ticks = TICKS_PER_DAY * days;
 
-    println!("N Genesis -- Phase 3 Economy Soak Test");
+    println!("N Genesis -- Phase 4 Economy Soak Test");
     println!("Seed: {}", seed);
     println!("Agents: {}", num_agents);
     println!("Companies: {}", num_companies);
@@ -50,9 +73,11 @@ fn main() {
     let mut total_food_produced = 0u64;
     let mut total_food_consumed = 0u64;
     let mut total_food_purchased = 0u64;
-    let mut _total_transactions = 0u64;
+    let mut total_water_produced = 0u64;
+    let mut total_water_consumed = 0u64;
+    let mut total_water_purchased = 0u64;
 
-    for tick in 0..total_ticks {
+    for tick_num in 0..total_ticks {
         world.tick();
 
         let events_before = world.state.events.len();
@@ -61,18 +86,20 @@ fn main() {
                 EventType::ProductionCompleted => {
                     if event.state_snapshot.contains("food") {
                         total_food_produced += 1;
+                    } else if event.state_snapshot.contains("water") {
+                        total_water_produced += 1;
                     }
                 }
                 EventType::AgentAte => total_food_consumed += 1,
                 EventType::FoodPurchased => total_food_purchased += 1,
-                EventType::MarketTransactionCompleted => _total_transactions += 1,
+                EventType::AgentDrank => total_water_consumed += 1,
+                EventType::WaterPurchased => total_water_purchased += 1,
                 _ => {}
             }
         }
 
-        if tick % 24 == 0 {
-            let day = world.clock.day();
-            let hour = world.clock.hour_of_day();
+        if tick_num % (TICKS_PER_DAY) == 0 && tick_num > 0 {
+            let clock_str = format_clock(world.clock.tick);
             let sleeping = world
                 .state
                 .agents
@@ -104,17 +131,24 @@ fn main() {
                 .filter(|a| a.status == AgentStatus::Idle)
                 .count();
 
-            let avg_food_price = world
+            let food_price = world
                 .state
                 .markets
                 .prices
                 .get("food")
                 .copied()
                 .unwrap_or(0.0);
+            let water_price = world
+                .state
+                .markets
+                .prices
+                .get("water")
+                .copied()
+                .unwrap_or(0.0);
 
             println!(
-                "Day {:>2} Hour {:>2} | sleep: {:>2} work: {:>2} eat: {:>2} drink: {:>2} idle: {:>2} | food_price: {:.2} | events: {}",
-                day, hour, sleeping, working, eating, drinking, idle, avg_food_price, world.state.events.len()
+                "{} | sleep: {:>2} work: {:>2} eat: {:>2} drink: {:>2} idle: {:>2} | food: {:.2} water: {:.2} | events: {}",
+                clock_str, sleeping, working, eating, drinking, idle, food_price, water_price, world.state.events.len()
             );
         }
     }
@@ -131,11 +165,14 @@ fn main() {
         agents_money + companies_cash
     };
 
-    println!("\n=== PHASE 3 ECONOMY METRICS ===");
+    println!("\n=== PHASE 4 ECONOMY METRICS ===");
     println!("Total events: {}", world.state.events.len());
     println!("Food produced: {}", total_food_produced);
     println!("Food consumed (eating): {}", total_food_consumed);
     println!("Food purchased (market): {}", total_food_purchased);
+    println!("Water produced: {}", total_water_produced);
+    println!("Water consumed (drinking): {}", total_water_consumed);
+    println!("Water purchased (market): {}", total_water_purchased);
     println!(
         "Total money: initial={:.2} final={:.2} delta={:.2}",
         initial_total_money,
@@ -150,20 +187,34 @@ fn main() {
     println!("Companies total cash: {:.2}", companies_cash);
     println!("Companies total revenue: {:.2}", companies_revenue);
 
-    let avg_food_price = world
+    let food_price = world
         .state
         .markets
         .prices
         .get("food")
         .copied()
         .unwrap_or(0.0);
-    println!("Final food price: {:.2}", avg_food_price);
+    let water_price = world
+        .state
+        .markets
+        .prices
+        .get("water")
+        .copied()
+        .unwrap_or(0.0);
+    println!("Final food price: {:.2}", food_price);
+    println!("Final water price: {:.2}", water_price);
 
     let agents_with_zero_food = world
         .state
         .agents
         .values()
         .filter(|a| a.inventory.resource_quantity("food") == 0)
+        .count();
+    let agents_with_zero_water = world
+        .state
+        .agents
+        .values()
+        .filter(|a| a.inventory.resource_quantity("water") == 0)
         .count();
     let agents_with_zero_money = world
         .state
@@ -172,7 +223,36 @@ fn main() {
         .filter(|a| a.money <= 0.0)
         .count();
     println!("Agents with zero food: {}", agents_with_zero_food);
+    println!("Agents with zero water: {}", agents_with_zero_water);
     println!("Agents with zero money: {}", agents_with_zero_money);
+
+    println!("\n=== MARKET DEPTH ===");
+    let depth = &world.state.markets.depth;
+    println!(
+        "Food:  bid_depth={} ask_depth={}",
+        depth.food_bid_depth, depth.food_ask_depth
+    );
+    println!(
+        "Water: bid_depth={} ask_depth={}",
+        depth.water_bid_depth, depth.water_ask_depth
+    );
+
+    let water_volume = world
+        .state
+        .markets
+        .total_volume
+        .get("water")
+        .copied()
+        .unwrap_or(0);
+    let food_volume = world
+        .state
+        .markets
+        .total_volume
+        .get("food")
+        .copied()
+        .unwrap_or(0);
+    println!("Food trade volume: {}", food_volume);
+    println!("Water trade volume: {}", water_volume);
 
     println!("\n=== INVARIANT CHECK ===");
     let mut violations = 0;
@@ -223,9 +303,6 @@ fn main() {
             );
             violations += 1;
         }
-        for (_res, _qty) in &company.inventory {
-            // u32 is always >= 0, invariant is structurally guaranteed
-        }
     }
 
     let money_check = (final_total_money - initial_total_money).abs();
@@ -238,8 +315,16 @@ fn main() {
     }
 
     if violations == 0 {
-        println!("ALL PHASE 3 ECONOMIC INVARIANTS PASSED.");
+        println!("ALL PHASE 4 ECONOMIC INVARIANTS PASSED.");
     } else {
         println!("{} INVARIANT VIOLATIONS!", violations);
     }
+
+    println!("\n=== N WORLD CLOCK (Final) ===");
+    println!("Date: {}", format_clock(world.clock.tick));
+    println!(
+        "Day {} of year {}",
+        world.clock.day_of_month(),
+        world.clock.year()
+    );
 }
