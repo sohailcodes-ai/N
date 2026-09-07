@@ -69,6 +69,15 @@ pub const CASH_FOR_GROWTH: f64 = 500.0;
 pub const LOSS_FOR_CONTRACTION: f64 = -100.0;
 pub const FIRE_GRADUAL_COOLDOWN: u32 = 6;
 
+pub const PARCELS_PER_DISTRICT: usize = 4;
+pub const BASE_PARCEL_VALUE: f64 = 100.0;
+pub const PARCEL_VALUE_GROWTH_RATE: f64 = 0.001;
+pub const CONSTRUCTION_LABOR_EFFICIENCY: f64 = 0.5;
+pub const EXPANSION_COOLDOWN: u64 = 4320;
+pub const EXPANSION_CASH_RESERVE: f64 = 800.0;
+pub const EXPANSION_PROFIT_THRESHOLD: f64 = 100.0;
+pub const HOUSING_DEMAND_THRESHOLD: f64 = 0.3;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentNeeds {
     pub hunger: f64,

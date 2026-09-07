@@ -30,7 +30,7 @@ fn main() {
     let days = 7;
     let total_ticks = TICKS_PER_DAY * days;
 
-    println!("N Genesis -- Phase 5 Employment & Labor Markets");
+    println!("N Genesis -- Phase 6 Property, Buildings & Construction");
     println!("Seed: {}", seed);
     println!("Agents: {}", num_agents);
     println!("Companies: {}", num_companies);
@@ -351,6 +351,52 @@ fn main() {
     println!("Food trade volume: {}", food_volume);
     println!("Water trade volume: {}", water_volume);
 
+    println!("\n=== PROPERTY & BUILDINGS ===");
+    let total_parcels = world.state.parcels.len();
+    let total_buildings = world.state.buildings.len();
+    let total_properties = world.state.properties.len();
+    let operational_buildings = world.state.buildings.values().filter(|b| b.operational).count();
+    let total_capacity: u32 = world.state.buildings.values().map(|b| b.capacity).sum();
+    let housed = world.state.agents.values().filter(|a| a.housing_id.is_some()).count();
+    let total_property_value: f64 = world.state.parcels.values().map(|p| p.current_value).sum();
+    println!("Parcels: {}", total_parcels);
+    println!("Buildings: {} ({} operational)", total_buildings, operational_buildings);
+    println!("Properties: {}", total_properties);
+    println!("Total building capacity: {}", total_capacity);
+    println!("Agents housed: {} / {}", housed, world.state.agents.len());
+    println!("Total property value: {:.2} N", total_property_value);
+
+    println!("\n=== CONSTRUCTION ===");
+    let active_construction = world.state.construction_projects.values()
+        .filter(|p| matches!(p.status, n_simulation::ConstructionState::UnderConstruction))
+        .count();
+    let completed_construction = world.state.construction_projects.values()
+        .filter(|p| matches!(p.status, n_simulation::ConstructionState::Completed))
+        .count();
+    let construction_investment: f64 = world.state.construction_projects.values()
+        .map(|p| p.paid_cost)
+        .sum();
+    println!("Construction projects: {}", world.state.construction_projects.len());
+    println!("  Active: {}", active_construction);
+    println!("  Completed: {}", completed_construction);
+    println!("  Total investment: {:.2} N", construction_investment);
+
+    println!("\n=== DISTRICTS ===");
+    let mut district_entries: Vec<_> = world.state.city.districts.iter().collect();
+    district_entries.sort_by(|a, b| a.0.cmp(b.0));
+    for (district_id, district) in &district_entries {
+        println!(
+            "  {}: parcels={}, residents={}, capacity(R/C/I)={}/{}/{}, property_value={:.2} N",
+            district_id,
+            district.parcel_ids.len(),
+            district.residents,
+            district.residential_capacity,
+            district.commercial_capacity,
+            district.industrial_capacity,
+            district.total_property_value
+        );
+    }
+
     println!("\n=== INVARIANT CHECK ===");
     let mut violations = 0;
     for agent in world.state.agents.values() {
@@ -416,7 +462,7 @@ fn main() {
     }
 
     if violations == 0 {
-        println!("ALL PHASE 5 ECONOMIC INVARIANTS PASSED.");
+        println!("ALL PHASE 6 ECONOMIC INVARIANTS PASSED.");
     } else {
         println!("{} INVARIANT VIOLATIONS!", violations);
     }

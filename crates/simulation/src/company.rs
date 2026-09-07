@@ -77,4 +77,9 @@ pub struct CompanyState {
     pub last_hire_tick: u64,
     pub active: bool,
     pub closed_at_tick: Option<u64>,
+    pub building_ids: Vec<String>,
+    pub property_ids: Vec<String>,
+    pub total_capacity: u32,
+    pub construction_project_ids: Vec<String>,
+    pub last_expansion_tick: u64,
 }

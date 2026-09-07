@@ -50,6 +50,16 @@ pub enum EventType {
     CompanyExpanded,
     CompanyContracted,
     CompanyClosedByInsolvency,
+    ParcelPurchased,
+    PropertyTransferred,
+    ConstructionStarted,
+    ConstructionProgressed,
+    ConstructionCompleted,
+    BuildingActivated,
+    HousingAssigned,
+    HousingEvicted,
+    CompanyExpansionStarted,
+    DistrictUpdated,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

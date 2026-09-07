@@ -83,4 +83,5 @@ pub struct AgentState {
     pub experience: HashMap<String, f64>,
     pub memories: Vec<String>,
     pub goals: Vec<String>,
+    pub housing_id: Option<String>,
 }

@@ -4,11 +4,11 @@ Persistent autonomous civilization simulation.
 
 ## Current State
 
-**Phase 5 — Employment & Labor Markets**
+**Phase 6 — Property, Buildings & Construction**
 
 - Simulation engine with deterministic clock (ChaCha8Rng seeded)
 - 50 agents with physical needs (hunger, thirst, fatigue)
-- 3 companies (2 food producers, 1 service) with dynamic employment
+- 10 companies with dynamic employment
 - 5 districts with road network
 - Deterministic daily routines (drink → eat → sleep → work → idle)
 - Inventory system (food, water with capacity limits)
@@ -24,19 +24,24 @@ Persistent autonomous civilization simulation.
 - **Labor market** (job openings, competitive hiring, wage-based selection)
 - **Company profitability** (revenue tracking, loss streaks, insolvency)
 - **Insolvency** (companies below cash threshold close, employees released)
+- **Property system** (parcels with zones, ownership, property values)
+- **Building system** (typed buildings with capacity, operational status)
+- **Construction system** (recipes, labor investment, progress tracking)
+- **Housing system** (agent assignment to residential buildings)
+- **District metrics** (capacity tracking, resident counts, property values)
 - Event system (append-only history with economic events)
 - Economic invariants enforced (no negative inventory/money, money conserved)
-- 91 unit tests covering all systems
+- 110 unit tests covering all systems
 - 30-day soak test with full economic cycle
 
 ## Performance
 
 | Metric | Time |
 |--------|------|
-| `cargo test -p n-simulation` (debug) | ~96s |
-| `cargo test -p n-simulation --release` | ~15s |
-| 30-day soak (release) | ~10s |
-| 30-day soak (debug) | ~96s |
+| `cargo test -p n-simulation` (debug) | ~102s |
+| `cargo test -p n-simulation --release` | ~38s |
+| 30-day soak (release) | ~25s |
+| 30-day soak (debug) | ~102s |
 
 ## How to Compile
 
@@ -55,13 +60,14 @@ See `docs/agents.md` for agent architecture.
 See `docs/simulation.md` for simulation design.
 See `docs/economy.md` for economy and market design.
 See `docs/employment.md` for employment and labor market design.
+See `docs/property.md` for property, buildings & construction.
 
 ## Key Principles
 
 1. **Simulation is authoritative** — AI proposes, reality decides
 2. **Determinism** — same seed + same inputs = same results
 3. **Causal economy** — money emerges from economic activity
-4. **No LLMs in Phase 5** — deterministic survival + economic layer
+4. **No LLMs in Phase 6** — deterministic survival + economic layer
 5. **Physical resources** — production consumes real inputs, creates real outputs
 
 ## Economic Causality
@@ -90,6 +96,18 @@ Company receives raw food
 → profitable: hire more workers
 → unprofitable: loss streak grows
 → insolvency: company closes, workers released
+
+Company profit exceeds expansion threshold
+→ company demands expansion
+→ acquires land parcel (zone-compatible)
+→ starts construction project (invests money + labor)
+→ construction progresses over time
+→ building completed
+→ capacity increases
+→ more production possible
+→ property value grows
+→ district metrics update
+→ agents assigned to residential buildings
 ```
 
 ## Roadmap
@@ -99,7 +117,7 @@ Company receives raw food
 - Phase 3: Resources, production, consumption, market, economy ✅
 - Phase 4: Advanced market dynamics, multiple resource types ✅
 - Phase 5: Employment contracts, hiring/firing, ownership ✅
-- Phase 6: Property, buildings, construction
+- Phase 6: Property, buildings, construction ✅
 - Phase 7: Events, persistence, replay
 - Phase 8: AI cognition (LLM intents)
 - Phase 9: Emergence (autonomous behavior)

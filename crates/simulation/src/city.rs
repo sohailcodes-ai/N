@@ -8,6 +8,13 @@ pub struct DistrictLayout {
     pub residents: u32,
     pub businesses: u32,
     pub average_income: f64,
+    pub parcel_ids: Vec<String>,
+    pub residential_capacity: u32,
+    pub commercial_capacity: u32,
+    pub industrial_capacity: u32,
+    pub active_construction: u32,
+    pub completed_construction: u32,
+    pub total_property_value: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

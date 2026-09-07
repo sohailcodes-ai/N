@@ -32,6 +32,11 @@ Each `world.tick()`:
 12. **Profit tracking** — companies compute revenue vs expenses
 13. **Insolvency** — close companies below cash threshold
 14. **Cleanup** — prune stale job openings and dead employments
+15. **Construction labor** — working agents contribute to construction projects
+16. **Construction progress** — advance construction projects, complete buildings
+17. **Company expansion** — profitable companies start new construction
+18. **Housing** — assign agents to residential buildings
+19. **Property updates** — grow parcel values, compute district metrics
 
 ## Needs Processing
 

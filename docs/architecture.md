@@ -215,13 +215,18 @@ Events enable: debugging emergent behavior, replay, persistence, observability.
 - Insolvency detection (cash threshold, loss streaks, company closure)
 - Wage payment (hourly during work hours, company affordability)
 - Job posting and evaluation (opening creation, agent applications)
-- 91 unit tests
+- 110 unit tests (91 existing + 19 Phase 6)
 - 30-day soak test with full economic cycle
 
-### Phase 6 — City
-- Land and property
-- Buildings and construction
-- Maintenance
+### Phase 6 — Property, Buildings & Construction (DONE)
+- Property system (parcels with zones, ownership, appreciation)
+- Building system (typed buildings with capacity, operational status)
+- Construction system (recipes, labor investment, progress tracking)
+- Housing system (agent assignment to residential buildings)
+- District metrics (capacity tracking, resident counts, property values)
+- Genesis bootstrap (20 parcels, 20 buildings, 20 properties)
+- 19 unit tests
+- 30-day soak test with full economic cycle
 
 ### Phase 7 — Events
 - Full event system

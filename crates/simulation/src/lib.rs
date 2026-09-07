@@ -7,6 +7,7 @@ pub mod employment;
 pub mod events;
 pub mod market;
 pub mod production;
+pub mod property;
 pub mod resources;
 
 pub use agent::*;
@@ -18,6 +19,7 @@ pub use employment::*;
 pub use events::*;
 pub use market::*;
 pub use production::*;
+pub use property::*;
 pub use resources::*;
 
 use serde::{Deserialize, Serialize};
@@ -40,6 +42,11 @@ pub struct SimulationState {
     pub tick: u64,
     pub production_recipes: HashMap<String, Recipe>,
     pub labor_market: LaborMarketState,
+    pub parcels: HashMap<String, Parcel>,
+    pub buildings: HashMap<String, Building>,
+    pub properties: HashMap<String, Property>,
+    pub construction_recipes: HashMap<String, ConstructionRecipe>,
+    pub construction_projects: HashMap<String, ConstructionProject>,
 }
 
 #[derive(Clone, Debug)]
@@ -81,6 +88,7 @@ impl World {
                 experience,
                 memories: Vec::new(),
                 goals: vec!["survive".to_string(), "thrive".to_string()],
+                housing_id: None,
             };
 
             events.push(Event {
@@ -177,6 +185,11 @@ impl World {
                 last_hire_tick: 0,
                 active: true,
                 closed_at_tick: None,
+                building_ids: Vec::new(),
+                property_ids: Vec::new(),
+                total_capacity: 0,
+                construction_project_ids: Vec::new(),
+                last_expansion_tick: 0,
             };
 
             events.push(Event {
@@ -263,9 +276,158 @@ impl World {
                     residents: num_agents / 5,
                     businesses: num_companies / 5,
                     average_income: 50.0,
+                    parcel_ids: Vec::new(),
+                    residential_capacity: 0,
+                    commercial_capacity: 0,
+                    industrial_capacity: 0,
+                    active_construction: 0,
+                    completed_construction: 0,
+                    total_property_value: 0.0,
                 },
             );
         }
+
+        let mut parcels = HashMap::new();
+        let mut buildings = HashMap::new();
+        let mut properties = HashMap::new();
+        let parcel_zones: Vec<(Zone, u32)> = vec![
+            (Zone::Residential, 2),
+            (Zone::Commercial, 1),
+            (Zone::Industrial, 1),
+        ];
+
+        let mut parcel_counter = 0u32;
+        for i in 0..5u32 {
+            let district_id = format!("district-{}", i);
+            let district = districts.get_mut(&district_id).unwrap();
+            for &(ref zone, count) in &parcel_zones {
+                for _ in 0..count {
+                    let pid = format!("parcel-{:04}", parcel_counter);
+                    let value = default_parcel_value(zone);
+                    let parcel = Parcel {
+                        id: pid.clone(),
+                        district_id: district_id.clone(),
+                        zone: zone.clone(),
+                        area: 25.0,
+                        owner: PropertyOwnership::Unowned,
+                        current_value: value,
+                        occupied: false,
+                        building_id: None,
+                    };
+                    district.parcel_ids.push(pid.clone());
+                    parcels.insert(pid, parcel);
+                    parcel_counter += 1;
+                }
+            }
+            district.total_property_value = district
+                .parcel_ids
+                .iter()
+                .filter_map(|pid| parcels.get(pid))
+                .map(|p| p.current_value)
+                .sum();
+        }
+
+        let mut building_counter = 0u32;
+        let district_ids: Vec<String> = districts.keys().cloned().collect();
+        for district_id in &district_ids {
+            let district = districts.get(district_id).unwrap();
+            let parcel_ids: Vec<String> = district.parcel_ids.clone();
+            for pid in &parcel_ids {
+                let parcel = parcels.get(pid).unwrap();
+                let (bt, _bkey) = match parcel.zone {
+                    Zone::Residential => (BuildingType::House, "house"),
+                    Zone::Commercial => (BuildingType::Shop, "shop"),
+                    Zone::Industrial => (BuildingType::Factory, "factory"),
+                    Zone::Public => (BuildingType::Warehouse, "warehouse"),
+                };
+                let bid = format!("building-{:04}", building_counter);
+                let capacity = default_building_capacity(&bt);
+                let owner_company = if num_companies > 0 {
+                    format!("company-{:03}", building_counter % num_companies)
+                } else {
+                    "company-000".to_string()
+                };
+                let building = Building {
+                    id: bid.clone(),
+                    parcel_id: pid.clone(),
+                    building_type: bt.clone(),
+                    owner: PropertyOwnership::Company(owner_company.clone()),
+                    operator: Some(owner_company),
+                    construction_state: ConstructionState::Completed,
+                    construction_progress: 1.0,
+                    capacity,
+                    operational: true,
+                    construction_cost: 0.0,
+                    maintenance_cost: 0.0,
+                };
+                let parcel = parcels.get_mut(pid).unwrap();
+                parcel.occupied = true;
+                parcel.building_id = Some(bid.clone());
+
+                let recipe_key = ConstructionRecipe::recipe_key(&bt);
+                let recipe = ConstructionRecipe::default_recipes()
+                    .get(&recipe_key)
+                    .cloned()
+                    .unwrap_or(ConstructionRecipe {
+                        building_type: bt.clone(),
+                        money_cost: 500.0,
+                        resource_cost: HashMap::new(),
+                        labor_hours: 8,
+                        duration_ticks: 1440,
+                        capacity,
+                        maintenance_cost: 5.0,
+                    });
+
+                let prop_id = format!("property-{:04}", building_counter);
+                let property = Property {
+                    id: prop_id,
+                    parcel_id: pid.clone(),
+                    owner: building.owner.clone(),
+                    building_type: bt,
+                    value: recipe.money_cost,
+                    purchase_price: recipe.money_cost,
+                    occupancy: 0,
+                    building_id: Some(bid.clone()),
+                };
+                properties.insert(property.id.clone(), property);
+                let building_capacity = building.capacity;
+                let building_operator = building.operator.clone();
+                buildings.insert(bid.clone(), building);
+                if let Some(op_cid) = &building_operator {
+                    if let Some(comp) = companies.get_mut(op_cid) {
+                        comp.building_ids.push(bid.clone());
+                        comp.total_capacity += building_capacity;
+                    }
+                }
+                building_counter += 1;
+            }
+        }
+
+        for district in districts.values_mut() {
+            for pid in &district.parcel_ids {
+                if let Some(parcel) = parcels.get(pid) {
+                    if parcel.occupied {
+                        if let Some(bid) = &parcel.building_id {
+                            if let Some(b) = buildings.get(bid) {
+                                if b.operational {
+                                    match b.building_type {
+                                        BuildingType::House | BuildingType::Apartment => {
+                                            district.residential_capacity += b.capacity
+                                        }
+                                        BuildingType::Shop | BuildingType::Office => {
+                                            district.commercial_capacity += b.capacity
+                                        }
+                                        _ => district.industrial_capacity += b.capacity,
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let construction_recipes = ConstructionRecipe::default_recipes();
 
         let mut prices = HashMap::new();
         prices.insert("food".to_string(), FOOD_BASE_PRICE);
@@ -304,6 +466,11 @@ impl World {
             tick: 0,
             production_recipes: Recipe::default_recipes(),
             labor_market,
+            parcels,
+            buildings,
+            properties,
+            construction_recipes,
+            construction_projects: HashMap::new(),
         };
 
         World { state, clock }
@@ -331,6 +498,9 @@ impl World {
         self.process_wages(tick);
         self.process_company_accounting(tick);
         self.process_workforce_adjustment(tick);
+        self.process_construction(tick);
+        self.process_housing(tick);
+        self.process_property_updates(tick);
         self.process_resource_regeneration(tick);
 
         if self.state.events.len() > 50000 {
@@ -1807,6 +1977,162 @@ impl World {
                         company_id, new_desired
                     ),
                 });
+            }
+        }
+    }
+
+    fn process_housing(&mut self, _tick: u64) {
+        let agent_ids: Vec<String> = self.state.agents.keys().cloned().collect();
+        for agent_id in &agent_ids {
+            if self.state.agents.get(agent_id).unwrap().housing_id.is_some() {
+                continue;
+            }
+            let agent_location = self.state.agents.get(agent_id).unwrap().location.clone();
+            let available = self.state.buildings.values()
+                .filter(|b| {
+                    b.operational
+                        && matches!(b.building_type, BuildingType::House | BuildingType::Apartment)
+                        && self.state.parcels.get(&b.parcel_id)
+                            .map(|p| p.district_id == agent_location)
+                            .unwrap_or(false)
+                })
+                .filter(|b| {
+                    let current_occupancy = self
+                        .state
+                        .agents
+                        .values()
+                        .filter(|a| a.housing_id.as_ref() == Some(&b.id))
+                        .count();
+                    (current_occupancy as u32) < b.capacity
+                })
+                .min_by_key(|b| b.id.clone())
+                .cloned();
+            if let Some(building) = available {
+                let agent = self.state.agents.get_mut(agent_id).unwrap();
+                agent.housing_id = Some(building.id);
+            }
+        }
+    }
+
+    fn process_construction(&mut self, _tick: u64) {
+        let project_ids: Vec<String> = self.state.construction_projects.keys().cloned().collect();
+        for pid in project_ids {
+            let project = self.state.construction_projects.get_mut(&pid).unwrap();
+            if project.status == ConstructionState::UnderConstruction {
+                project.progress += 1;
+                if project.progress >= project.total_duration {
+                    let parcel_id = project.parcel_id.clone();
+                    let target_building = project.target_building.clone();
+                    let owner = project.owner.clone();
+                    project.status = ConstructionState::Completed;
+                    let bid = format!("building-{:04}", self.state.buildings.len());
+                    let recipe_key = ConstructionRecipe::recipe_key(&target_building);
+                    let capacity = self.state.construction_recipes.get(&recipe_key)
+                        .map(|r| r.capacity)
+                        .unwrap_or(4);
+                    let building = Building {
+                        id: bid.clone(),
+                        parcel_id: parcel_id.clone(),
+                        building_type: target_building,
+                        owner: PropertyOwnership::Company(owner.clone()),
+                        operator: Some(owner.clone()),
+                        construction_state: ConstructionState::Completed,
+                        construction_progress: 1.0,
+                        capacity,
+                        operational: true,
+                        construction_cost: 0.0,
+                        maintenance_cost: 0.0,
+                    };
+                    self.state.buildings.insert(bid.clone(), building);
+                    if let Some(parcel) = self.state.parcels.get_mut(&parcel_id) {
+                        parcel.occupied = true;
+                        parcel.building_id = Some(bid.clone());
+                    }
+                    if let Some(comp) = self.state.companies.get_mut(&owner) {
+                        comp.building_ids.push(bid);
+                        comp.total_capacity += capacity;
+                    }
+                }
+            }
+        }
+    }
+
+    fn process_property_updates(&mut self, tick: u64) {
+        if tick % TICKS_PER_DAY != 0 {
+            return;
+        }
+        for parcel in self.state.parcels.values_mut() {
+            let growth = parcel.current_value * PARCEL_VALUE_GROWTH_RATE * 30.0;
+            parcel.current_value += growth;
+        }
+        let district_ids: Vec<String> = self.state.city.districts.keys().cloned().collect();
+        for district_id in district_ids {
+            let parcel_ids = self
+                .state
+                .city
+                .districts
+                .get(&district_id)
+                .unwrap()
+                .parcel_ids
+                .clone();
+            let mut total_value = 0.0f64;
+            for pid in &parcel_ids {
+                if let Some(parcel) = self.state.parcels.get(pid) {
+                    total_value += parcel.current_value;
+                }
+            }
+            let buildings_in_district: Vec<String> = self
+                .state
+                .buildings
+                .values()
+                .filter(|b| {
+                    self.state
+                        .parcels
+                        .get(&b.parcel_id)
+                        .map(|p| p.district_id == district_id)
+                        .unwrap_or(false)
+                })
+                .map(|b| b.id.clone())
+                .collect();
+            let mut res_cap = 0u32;
+            let mut com_cap = 0u32;
+            let mut ind_cap = 0u32;
+            for bid in &buildings_in_district {
+                if let Some(building) = self.state.buildings.get(bid) {
+                    if building.operational {
+                        match building.building_type {
+                            BuildingType::House | BuildingType::Apartment => {
+                                res_cap += building.capacity
+                            }
+                            BuildingType::Shop | BuildingType::Office => {
+                                com_cap += building.capacity
+                            }
+                            _ => ind_cap += building.capacity,
+                        }
+                    }
+                }
+            }
+            let residents = self
+                .state
+                .agents
+                .values()
+                .filter(|a| {
+                    if let Some(ref hid) = a.housing_id {
+                        if let Some(building) = self.state.buildings.get(hid) {
+                            if let Some(parcel) = self.state.parcels.get(&building.parcel_id) {
+                                return parcel.district_id == district_id;
+                            }
+                        }
+                    }
+                    false
+                })
+                .count() as u32;
+            if let Some(district) = self.state.city.districts.get_mut(&district_id) {
+                district.total_property_value = total_value;
+                district.residential_capacity = res_cap;
+                district.commercial_capacity = com_cap;
+                district.industrial_capacity = ind_cap;
+                district.residents = residents;
             }
         }
     }
@@ -3546,6 +3872,307 @@ mod tests {
                     company.id
                 );
             }
+        }
+    }
+
+    // ─── PHASE 6: PROPERTY, BUILDINGS & CONSTRUCTION TESTS ─────────
+
+    #[test]
+    fn genesis_creates_parcels() {
+        let w = World::initialize(42, 10, 3);
+        assert!(!w.state.parcels.is_empty(), "Genesis should create parcels");
+        let total = w.state.parcels.len();
+        assert_eq!(total, 5 * PARCELS_PER_DISTRICT);
+        for parcel in w.state.parcels.values() {
+            assert!(!parcel.id.is_empty());
+            assert!(!parcel.district_id.is_empty());
+            assert!(w.state.city.districts.contains_key(&parcel.district_id));
+        }
+    }
+
+    #[test]
+    fn parcels_belong_to_districts() {
+        let w = World::initialize(42, 10, 3);
+        for parcel in w.state.parcels.values() {
+            let district = w.state.city.districts.get(&parcel.district_id);
+            assert!(district.is_some(), "Parcel district should exist");
+            assert!(
+                district.unwrap().parcel_ids.contains(&parcel.id),
+                "District should reference parcel"
+            );
+        }
+    }
+
+    #[test]
+    fn zoning_exists() {
+        let w = World::initialize(42, 10, 3);
+        let mut has_r = false;
+        let mut has_c = false;
+        let mut has_i = false;
+        for parcel in w.state.parcels.values() {
+            match parcel.zone {
+                Zone::Residential => has_r = true,
+                Zone::Commercial => has_c = true,
+                Zone::Industrial => has_i = true,
+                _ => {}
+            }
+        }
+        assert!(has_r, "Should have residential parcels");
+        assert!(has_c, "Should have commercial parcels");
+        assert!(has_i, "Should have industrial parcels");
+    }
+
+    #[test]
+    fn genesis_creates_buildings() {
+        let w = World::initialize(42, 10, 3);
+        assert!(!w.state.buildings.is_empty(), "Genesis should create buildings");
+        for building in w.state.buildings.values() {
+            assert!(building.operational, "Genesis buildings should be operational");
+            assert_eq!(building.construction_state, ConstructionState::Completed);
+            assert!(w.state.parcels.contains_key(&building.parcel_id));
+        }
+    }
+
+    #[test]
+    fn buildings_occupy_real_parcels() {
+        let w = World::initialize(42, 10, 3);
+        for building in w.state.buildings.values() {
+            let parcel = w.state.parcels.get(&building.parcel_id).unwrap();
+            assert!(parcel.occupied, "Parcel should be occupied");
+            assert_eq!(parcel.building_id.as_ref(), Some(&building.id));
+        }
+    }
+
+    #[test]
+    fn buildings_have_useful_capacity() {
+        let w = World::initialize(42, 10, 3);
+        for building in w.state.buildings.values() {
+            assert!(building.capacity > 0, "Building should have capacity");
+        }
+    }
+
+    #[test]
+    fn company_has_building_and_capacity() {
+        let w = World::initialize(42, 10, 3);
+        for company in w.state.companies.values() {
+            if company.active {
+                assert!(
+                    !company.building_ids.is_empty(),
+                    "Active company {} should have buildings",
+                    company.id
+                );
+                assert!(
+                    company.total_capacity > 0,
+                    "Active company {} should have capacity",
+                    company.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn genesis_creates_properties() {
+        let w = World::initialize(42, 10, 3);
+        assert!(!w.state.properties.is_empty(), "Genesis should create properties");
+        for property in w.state.properties.values() {
+            assert!(property.value > 0.0, "Property should have value");
+        }
+    }
+
+    #[test]
+    fn property_owner_matches_building_owner() {
+        let w = World::initialize(42, 10, 3);
+        for property in w.state.properties.values() {
+            if let Some(building_id) = &property.building_id {
+                let building = w.state.buildings.get(building_id).unwrap();
+                assert_eq!(
+                    format!("{:?}", property.owner),
+                    format!("{:?}", building.owner),
+                    "Property and building owners should match"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn construction_recipes_exist() {
+        let w = World::initialize(42, 10, 3);
+        assert!(!w.state.construction_recipes.is_empty(), "Should have recipes");
+        for rt in &["house", "apartment", "factory", "farm", "shop", "office", "warehouse", "water_plant"] {
+            assert!(w.state.construction_recipes.contains_key(*rt), "Missing recipe: {}", rt);
+        }
+    }
+
+    #[test]
+    fn construction_recipe_costs_positive() {
+        let w = World::initialize(42, 10, 3);
+        for recipe in w.state.construction_recipes.values() {
+            assert!(recipe.money_cost > 0.0, "Recipe should have money cost");
+            assert!(recipe.duration_ticks > 0, "Recipe should have duration");
+            assert!(recipe.capacity > 0, "Recipe should have capacity");
+        }
+    }
+
+    #[test]
+    fn zone_building_compatibility() {
+        assert!(zone_compatible_building(&Zone::Residential, &BuildingType::House));
+        assert!(zone_compatible_building(&Zone::Residential, &BuildingType::Apartment));
+        assert!(!zone_compatible_building(&Zone::Residential, &BuildingType::Factory));
+        assert!(zone_compatible_building(&Zone::Commercial, &BuildingType::Shop));
+        assert!(!zone_compatible_building(&Zone::Commercial, &BuildingType::House));
+        assert!(zone_compatible_building(&Zone::Industrial, &BuildingType::Factory));
+        assert!(!zone_compatible_building(&Zone::Industrial, &BuildingType::Shop));
+    }
+
+    #[test]
+    fn manual_construction_flow() {
+        let mut w = World::initialize(42, 10, 3);
+        let cid = "company-000".to_string();
+        let district_id = w.state.companies.get(&cid).unwrap().location.clone();
+        let suitable = w.state.parcels.values()
+            .filter(|p| {
+                p.district_id == district_id
+                    && p.owner == PropertyOwnership::Unowned
+                    && zone_compatible_building(&p.zone, &BuildingType::Shop)
+            })
+            .min_by(|a, b| a.id.cmp(&b.id))
+            .cloned();
+        let parcel = suitable.expect("Should find suitable parcel");
+        let recipe = w.state.construction_recipes.get("shop").unwrap().clone();
+        {
+            let company = w.state.companies.get_mut(&cid).unwrap();
+            company.cash -= recipe.money_cost;
+            company.last_expansion_tick = 0;
+        }
+        let project_id = "project-test-0".to_string();
+        w.state.construction_projects.insert(project_id.clone(), ConstructionProject {
+            id: project_id.clone(),
+            owner: cid.clone(),
+            parcel_id: parcel.id.clone(),
+            target_building: BuildingType::Shop,
+            required_resources: recipe.resource_cost.clone(),
+            reserved_resources: recipe.resource_cost.clone(),
+            labor_required: recipe.labor_hours,
+            total_duration: recipe.duration_ticks,
+            progress: 0,
+            total_cost: recipe.money_cost,
+            paid_cost: recipe.money_cost,
+            status: ConstructionState::UnderConstruction,
+        });
+        for _ in 0..recipe.duration_ticks + 100 {
+            w.tick();
+        }
+        let proj = w.state.construction_projects.get(&project_id).unwrap();
+        assert_eq!(proj.status, ConstructionState::Completed);
+        let new_buildings: Vec<&Building> = w.state.buildings.values()
+            .filter(|b| b.building_type == BuildingType::Shop && b.operator.as_ref() == Some(&cid))
+            .collect();
+        assert!(!new_buildings.is_empty(), "Company should have new building");
+    }
+
+    #[test]
+    fn money_conservation_with_construction() {
+        let mut w = World::initialize(42, 10, 3);
+        let initial_total = {
+            let a: f64 = w.state.agents.values().map(|a| a.money).sum();
+            let c: f64 = w.state.companies.values().map(|c| c.cash).sum();
+            a + c
+        };
+        for _ in 0..1008 {
+            w.tick();
+        }
+        let final_total = {
+            let a: f64 = w.state.agents.values().map(|a| a.money).sum();
+            let c: f64 = w.state.companies.values().map(|c| c.cash).sum();
+            a + c
+        };
+        assert!(
+            (initial_total - final_total).abs() < 0.01,
+            "Money must be conserved: initial={:.2} final={:.2}",
+            initial_total,
+            final_total
+        );
+    }
+
+    #[test]
+    fn housing_assignment() {
+        let mut w = World::initialize(42, 20, 3);
+        for _ in 0..120 {
+            w.tick();
+        }
+        let housed = w.state.agents.values().filter(|a| a.housing_id.is_some()).count();
+        assert!(housed > 0, "Some agents should be housed");
+    }
+
+    #[test]
+    fn housing_occupancy_bounded() {
+        let mut w = World::initialize(42, 20, 3);
+        for _ in 0..120 {
+            w.tick();
+        }
+        for building in w.state.buildings.values() {
+            if matches!(building.building_type, BuildingType::House | BuildingType::Apartment) {
+                let occupants = w.state.agents.values()
+                    .filter(|a| a.housing_id.as_ref() == Some(&building.id))
+                    .count();
+                assert!(
+                    (occupants as u32) <= building.capacity,
+                    "Building {} occupancy {} exceeds capacity {}",
+                    building.id,
+                    occupants,
+                    building.capacity
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn district_metrics_exist() {
+        let w = World::initialize(42, 10, 3);
+        for district in w.state.city.districts.values() {
+            assert!(!district.parcel_ids.is_empty(), "District should have parcels");
+            assert!(district.total_property_value >= 0.0);
+        }
+    }
+
+    #[test]
+    fn property_values_positive() {
+        let w = World::initialize(42, 10, 3);
+        for parcel in w.state.parcels.values() {
+            assert!(
+                parcel.current_value > 0.0,
+                "Parcel {} should have positive value",
+                parcel.id
+            );
+        }
+    }
+
+    #[test]
+    fn deterministic_replay_phase6() {
+        let mut w1 = World::initialize(42, 10, 3);
+        let mut w2 = World::initialize(42, 10, 3);
+        for _ in 0..500 {
+            w1.tick();
+            w2.tick();
+        }
+        assert_eq!(w1.state.parcels.len(), w2.state.parcels.len());
+        assert_eq!(w1.state.buildings.len(), w2.state.buildings.len());
+        assert_eq!(w1.state.properties.len(), w2.state.properties.len());
+        for pid in w1.state.parcels.keys() {
+            let p1 = w1.state.parcels.get(pid).unwrap();
+            let p2 = w2.state.parcels.get(pid).unwrap();
+            assert_eq!(p1.owner, p2.owner, "Parcel {} owner mismatch", pid);
+            assert!(
+                (p1.current_value - p2.current_value).abs() < 0.01,
+                "Parcel {} value mismatch",
+                pid
+            );
+        }
+        for bid in w1.state.buildings.keys() {
+            let b1 = w1.state.buildings.get(bid).unwrap();
+            let b2 = w2.state.buildings.get(bid).unwrap();
+            assert_eq!(b1.construction_state, b2.construction_state, "Building {} state mismatch", bid);
+            assert_eq!(b1.capacity, b2.capacity, "Building {} capacity mismatch", bid);
         }
     }
 }

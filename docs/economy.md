@@ -200,6 +200,11 @@ Money never appears from nowhere. All money movement is traceable through events
 15. Closed companies have zero active employments
 16. Job openings are pruned when filled (openings == 0)
 17. Dead employments are pruned at end of each tick
+18. Parcel values are non-negative
+19. Building capacity is non-negative
+20. Construction projects complete within expected duration
+21. Agent housing respects building capacity
+22. District metrics reflect actual building and resident counts
 
 ## Simulation Tick Order
 
@@ -219,6 +224,11 @@ Money never appears from nowhere. All money movement is traceable through events
 13. Profit tracking (companies compute revenue vs expenses)
 14. Insolvency (close companies below cash threshold)
 15. Cleanup (prune stale job openings and dead employments)
+16. Construction labor (working agents contribute to construction)
+17. Construction progress (advance projects, complete buildings)
+18. Company expansion (profitable companies start construction)
+19. Housing (assign agents to residential buildings)
+20. Property updates (grow values, compute district metrics)
 ```
 
 Deterministic: same seed + same tick count = identical state.
