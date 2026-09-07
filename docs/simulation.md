@@ -16,9 +16,15 @@ Time concepts:
 ## Tick Lifecycle
 
 Each `world.tick()`:
-1. Advance clock by 1 tick
-2. Process agent needs (increase hunger/thirst/fatigue)
-3. Process agent routines (determine status, execute action)
+
+1. **Clock advancement** — increment tick counter
+2. **Needs update** — hunger/thirst/fatigue increase per tick
+3. **Agent purchasing** — buy food from market if hungry
+4. **Agent routines** — determine status, execute action (eat/drink/sleep/work)
+5. **Labor contribution** — working agents contribute to company production
+6. **Production** — companies with recipes produce goods
+7. **Market update** — list food, adjust prices, clean up old transactions
+8. **Wage payment** — companies pay working employees
 
 ## Needs Processing
 
@@ -43,8 +49,42 @@ Priority system applied to each agent:
 Status change triggers appropriate action:
 - Drinking: remove 1 water, reduce thirst by 0.35
 - Eating: remove 1 food, reduce hunger by 0.3
-- Working: gain skill XP
+- Working: gain skill XP, contribute labor to employer
 - Sleeping: reduce fatigue by 0.08
+
+## Production Processing
+
+Each tick, companies with recipes:
+1. Count working employees
+2. Check inputs available
+3. Check cooldown is 0
+4. Consume inputs
+5. Produce outputs (with skill multiplier)
+6. Set cooldown
+
+## Market Processing
+
+Each tick:
+1. Companies list produced food on market
+2. Supply/demand computed from recent transactions
+3. Price adjusts based on demand pressure vs supply pressure
+4. Old transactions cleaned up (> 24 ticks old)
+
+## Agent Purchasing
+
+Each tick, before routines:
+1. Check if agent hunger > 0.4 and food inventory < 5
+2. Find cheapest food listing (prefer same district)
+3. Buy affordable quantity
+4. Money moves: agent → company
+5. Food moves: company listing → agent inventory
+
+## Wage Payment
+
+Each tick:
+1. For each company, find agents with status == Working
+2. Pay 10 N per working employee (if company has cash)
+3. Money moves: company → agent
 
 ## Determinism
 
@@ -58,7 +98,7 @@ State transitions emit events with:
 - Unique event ID
 - Tick number
 - Event type enum
-- Actor (agent_id)
+- Actor (agent_id/company_id)
 - Cause (reason)
 - Affected entities
 - State snapshot (human-readable)

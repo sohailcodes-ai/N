@@ -191,12 +191,19 @@ Events enable: debugging emergent behavior, replay, persistence, observability.
 - Inventory management
 - Basic behavior
 
-### Phase 3 — Resources
-- Food, water, energy definitions
-- Production processes
-- Consumption
+### Phase 3 — Food Economy & Production (DONE)
+- Resource system (Food, Water, RawFood)
+- Production system (recipes, labor, cooldown, skill multiplier)
+- Company production (FoodProducer type, inventory, recipes)
+- Market system (listings, transactions, supply/demand pricing)
+- Agent food purchasing (hunger-driven buying)
+- Wage system (companies pay working employees)
+- Money flow (agent wages → purchases → company revenue)
+- Economic events (ProductionCompleted, FoodPurchased, WagePaid, PriceChanged)
+- 66 unit tests
+- 7-day Genesis soak test
 
-### Phase 4 — Economy
+### Phase 4 — Advanced Economy
 - Markets and orders
 - Supply/demand price discovery
 - Transactions and settlement

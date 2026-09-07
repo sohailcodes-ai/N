@@ -1,0 +1,53 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EventType {
+    Tick,
+    AgentCreated,
+    AgentStatusChanged,
+    CompanyFounded,
+    CompanyClosed,
+    AgentHired,
+    AgentFired,
+    SalaryPaid,
+    ProductProduced,
+    ProductSold,
+    PropertyPurchased,
+    PropertySold,
+    BuildingConstructed,
+    BuildingCompleted,
+    MarketOrderPlaced,
+    MarketOrderFilled,
+    ResourceConsumed,
+    AgentAte,
+    AgentDrank,
+    AgentStartedWork,
+    AgentStoppedWork,
+    AgentStartedRest,
+    AgentStartedSleep,
+    SkillImproved,
+    AgentNeedChanged,
+    IntentProposed,
+    IntentValidated,
+    DecisionMade,
+    ProductionStarted,
+    ProductionCompleted,
+    ResourceTransferred,
+    MarketListingCreated,
+    MarketTransactionCompleted,
+    FoodPurchased,
+    WagePaid,
+    CompanyRevenueReceived,
+    PriceChanged,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Event {
+    pub id: String,
+    pub tick: u64,
+    pub event_type: EventType,
+    pub actor: Option<String>,
+    pub cause: Option<String>,
+    pub entities: Vec<String>,
+    pub state_snapshot: String,
+}
