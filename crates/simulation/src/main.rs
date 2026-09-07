@@ -1,4 +1,4 @@
-use n_simulation::{AgentStatus, CompanyType, EventType, World, TICKS_PER_DAY, TICKS_PER_HOUR};
+use n_simulation::{AgentStatus, EventType, World, TICKS_PER_DAY, TICKS_PER_HOUR};
 
 fn format_clock(tick: u64) -> String {
     let minute = tick % TICKS_PER_HOUR;
@@ -258,7 +258,7 @@ fn main() {
     println!("\n=== MONEY ===");
     let agents_money: f64 = world.state.agents.values().map(|a| a.money).sum();
     let companies_cash: f64 = world.state.companies.values().map(|c| c.cash).sum();
-    let total_revenue: f64 = world
+    let _total_revenue: f64 = world
         .state
         .companies
         .values()

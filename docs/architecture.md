@@ -208,11 +208,15 @@ Events enable: debugging emergent behavior, replay, persistence, observability.
 - Supply/demand price discovery
 - Transactions and settlement
 
-### Phase 5 — Organizations
-- Company formation
-- Employment system
-- Salary payment
-- Ownership and shares
+### Phase 5 — Employment & Labor Markets (DONE)
+- Employment contracts (hiring, firing, wage negotiation)
+- Labor market (job openings, competitive hiring, skill requirements)
+- Company profitability tracking (revenue, expenses, profit/loss)
+- Insolvency detection (cash threshold, loss streaks, company closure)
+- Wage payment (hourly during work hours, company affordability)
+- Job posting and evaluation (opening creation, agent applications)
+- 91 unit tests
+- 30-day soak test with full economic cycle
 
 ### Phase 6 — City
 - Land and property

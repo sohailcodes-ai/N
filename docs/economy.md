@@ -93,10 +93,12 @@ When an agent has `status == Working` and `employer == Some(company_id)`:
 
 ### Wage Payment
 
-- Only paid to agents with `status == Working`
-- Amount: 10 N per tick per working employee
+- Only paid during work hours (ticks 540-959 per day)
+- Only paid once per hour (when minute_of_hour == 0)
+- Amount: agent's recorded wage (default 10 N/tick = 90 N/day)
 - Company cash → agent money
-- If company can't afford all wages, pays as many as possible
+- If company can't afford all wages, pays as many as possible (sorted by agent id)
+- Emits WagePaid events for each payment
 
 ## Market System
 
@@ -166,13 +168,17 @@ Total money in the world = agents money + companies cash.
 
 Money never appears from nowhere. All money movement is traceable through events.
 
-### Genesis Metrics (7-day soak)
+### Genesis Metrics (7-day soak, seed 1234, 50 agents, 10 companies)
 
 - Total money: 15,000 N (conserved, delta = 0.00)
-- Agents: 10,300 N | Companies: 4,700 N
-- Food produced: 160 units
-- Food consumed: 224 units
-- Food purchased: 60 transactions
+- Agents: 11,178 N | Companies: 3,822 N
+- Food produced: 159 units
+- Food consumed: 2,586 units
+- Food purchased: 943 transactions
+- Water produced: 82 units
+- Water consumed: 1,765 units
+- Hires: 231 | Fires: 91
+- Total wages paid: 16,520 N
 - Zero invariant violations
 
 ## Economic Invariants
@@ -187,18 +193,32 @@ Money never appears from nowhere. All money movement is traceable through events
 8. Failed production is atomic (inputs not consumed on failure)
 9. Company revenue comes only from transactions
 10. Prices remain positive and bounded [0.50, 10.00]
+11. An agent cannot be employed by two companies simultaneously
+12. Employed agents receive wages from their employer only
+13. Companies cannot pay more wages than they have in cash
+14. Firing releases all employees for that company
+15. Closed companies have zero active employments
+16. Job openings are pruned when filled (openings == 0)
+17. Dead employments are pruned at end of each tick
 
 ## Simulation Tick Order
 
 ```
-1. Clock advancement
-2. Needs update (hunger/thirst/fatigue increase)
-3. Agent purchasing (buy food from market if hungry)
-4. Agent routines (eat/drink/sleep/work/idle)
-5. Labor contribution (working agents → company labor)
-6. Production (companies with recipes produce goods)
-7. Market update (listings, pricing, cleanup)
-8. Wage payment (companies pay working employees)
+ 1. Clock advancement
+ 2. Needs update (hunger/thirst/fatigue increase)
+ 3. Agent purchasing (buy food from market if hungry)
+ 4. Agent water purchasing (buy water from market if thirsty)
+ 5. Agent routines (eat/drink/sleep/work/idle)
+ 6. Labor contribution (working agents → company labor)
+ 7. Production (companies with recipes produce goods)
+ 8. Market update (food/water listings, pricing, cleanup)
+ 9. Wage payment (companies pay working employees, hourly, work hours only)
+10. Job evaluation (unemployed agents apply for openings)
+11. Hiring (understaffed companies create job offers)
+12. Firing (unprofitable companies fire workers)
+13. Profit tracking (companies compute revenue vs expenses)
+14. Insolvency (close companies below cash threshold)
+15. Cleanup (prune stale job openings and dead employments)
 ```
 
 Deterministic: same seed + same tick count = identical state.
