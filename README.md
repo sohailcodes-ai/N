@@ -4,7 +4,7 @@ Persistent autonomous civilization simulation.
 
 ## Current State
 
-**Phase 6 — Property, Buildings & Construction**
+**Phase 7 — Events, Persistence & Replay**
 
 - Simulation engine with deterministic clock (ChaCha8Rng seeded)
 - 50 agents with physical needs (hunger, thirst, fatigue)
@@ -30,8 +30,13 @@ Persistent autonomous civilization simulation.
 - **Housing system** (agent assignment to residential buildings)
 - **District metrics** (capacity tracking, resident counts, property values)
 - Event system (append-only history with economic events)
+- Versioned persistence (state + clock + RNG)
+- Deterministic replay verification
 - Economic invariants enforced (no negative inventory/money, money conserved)
-- 110 unit tests covering all systems
+- 110+ unit tests covering all systems
+- Versioned JSON world snapshots with exact RNG state
+- Deterministic snapshot restore and continuation
+- Event-stream replay verification
 - 30-day soak test with full economic cycle
 
 ## Performance
@@ -118,7 +123,7 @@ Company profit exceeds expansion threshold
 - Phase 4: Advanced market dynamics, multiple resource types ✅
 - Phase 5: Employment contracts, hiring/firing, ownership ✅
 - Phase 6: Property, buildings, construction ✅
-- Phase 7: Events, persistence, replay
+- Phase 7: Events, persistence, replay ✅
 - Phase 8: AI cognition (LLM intents)
 - Phase 9: Emergence (autonomous behavior)
 - Phase 10: Dashboard, API, visualization
