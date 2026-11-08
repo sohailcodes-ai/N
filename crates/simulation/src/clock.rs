@@ -1,6 +1,7 @@
-use rand::rngs::StdRng;
 use rand::Rng;
+use rand_chacha::ChaCha8Rng;
 use rand::SeedableRng;
+use serde::{Deserialize, Serialize};
 
 pub const MINUTES_PER_TICK: u64 = 1;
 pub const TICKS_PER_HOUR: u64 = 60;
@@ -13,11 +14,11 @@ pub const TICKS_PER_WEEK: u64 = TICKS_PER_DAY * DAYS_PER_WEEK;
 pub const TICKS_PER_MONTH: u64 = TICKS_PER_DAY * DAYS_PER_MONTH;
 pub const TICKS_PER_YEAR: u64 = TICKS_PER_MONTH * MONTHS_PER_YEAR;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SimulationClock {
     pub tick: u64,
     pub speed: f64,
-    pub rng: StdRng,
+    pub rng: ChaCha8Rng,
 }
 
 impl SimulationClock {
@@ -25,7 +26,7 @@ impl SimulationClock {
         Self {
             tick: 0,
             speed,
-            rng: StdRng::seed_from_u64(seed),
+            rng: ChaCha8Rng::seed_from_u64(seed),
         }
     }
 
