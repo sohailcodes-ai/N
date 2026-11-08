@@ -9,6 +9,7 @@ pub mod market;
 pub mod production;
 pub mod property;
 pub mod resources;
+pub mod persistence;
 
 pub use agent::*;
 pub use city::*;
@@ -21,6 +22,7 @@ pub use market::*;
 pub use production::*;
 pub use property::*;
 pub use resources::*;
+pub use persistence::*;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -49,7 +51,7 @@ pub struct SimulationState {
     pub construction_projects: HashMap<String, ConstructionProject>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct World {
     pub state: SimulationState,
     pub clock: SimulationClock,
